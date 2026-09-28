@@ -279,7 +279,9 @@ import VibeShadowHost from './shadow-host.js';
     // --- Attachments (paste / pick / screenshot / clear) ---
     const attachInput = popover.querySelector('.vibe-attach-input');
     const attachmentsEl = popover.querySelector('.vibe-attachments');
-    const isLocal = VibeAPI.isLocalOrigin();
+    const isLocal = VibeAPI.canReachServerDirectly();
+    // Attachment ids whose thumbnail is being fetched through the background.
+    const thumbRequests = new Set();
     // For a not-yet-saved annotation we buffer blobs and upload them on save.
     const pendingAttachments = []; // { blob, mime, url }
     // Object URLs for images added this session, keyed by server attachment id —
@@ -300,6 +302,17 @@ import VibeShadowHost from './shadow-host.js';
       pendingAttachments.forEach((p, i) => tiles.push(attachmentTileHTML({ src: p.url, pendingIndex: i, kind: p.kind || 'user' })));
       attachmentsEl.innerHTML = tiles.join('');
       attachmentsEl.classList.toggle('empty', tiles.length === 0);
+      if (!isLocal) saved.forEach(att => loadThumbViaBackground(activeExistingAnnotation.id, att.id));
+    }
+
+    // Pages that can't load the server URL (non-local origin, remote server) get
+    // thumbnails as data URLs relayed by the background. Once per attachment.
+    function loadThumbViaBackground(annotationId, attId) {
+      if (sessionBlobUrls.has(attId) || thumbRequests.has(attId)) return;
+      thumbRequests.add(attId);
+      VibeAPI.attachmentDataUrl(annotationId, attId)
+        .then(dataUrl => { if (dataUrl) { sessionBlobUrls.set(attId, dataUrl); renderAttachments(); } })
+        .catch(() => {});
     }
 
     function attachmentTileHTML({ src, attId, pendingIndex, kind }) {

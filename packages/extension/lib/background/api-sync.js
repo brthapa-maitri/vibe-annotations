@@ -1,15 +1,22 @@
 // API sync — health checks, bidirectional merge, individual CRUD sync
 import { isSupportedUrl } from './url-filter.js';
 import { updateAllBadges } from './badge.js';
+import { getServerConfig, authHeaders } from '../server-config.js';
 
-const API_URL = 'http://127.0.0.1:3846';
 let connected = false;
+
+// fetch() against the configured server, with the auth token attached when set.
+export async function apiFetch(path, init = {}) {
+  const { url, token } = await getServerConfig();
+  return fetch(`${url}${path}`, { ...init, headers: { ...(init.headers || {}), ...authHeaders(token) } });
+}
 
 export function isConnected() { return connected; }
 
 export async function checkConnection() {
+  const { url: API_URL } = await getServerConfig();
   try {
-    const response = await fetch(`${API_URL}/health`, { method: 'GET', signal: AbortSignal.timeout(5000) });
+    const response = await apiFetch('/health', { method: 'GET', signal: AbortSignal.timeout(5000) });
     if (response.ok) {
       const data = await response.json();
       connected = true;
@@ -41,7 +48,7 @@ export async function checkConnection() {
 
 export async function syncAll(annotations) {
   try {
-    const response = await fetch(`${API_URL}/api/annotations/sync`, {
+    const response = await apiFetch(`/api/annotations/sync`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ annotations })
     });
     if (!response.ok) throw new Error(`API sync error: ${response.status}`);
@@ -59,7 +66,7 @@ export async function saveOne(annotation) {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3000);
-    const response = await fetch(`${API_URL}/api/annotations`, {
+    const response = await apiFetch(`/api/annotations`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(annotation), signal: controller.signal
     });
     clearTimeout(timeout);
@@ -81,7 +88,7 @@ export async function saveOne(annotation) {
 export async function uploadAttachment(id, blob, kind, mime) {
   const attempts = 5;
   for (let i = 0; i < attempts; i++) {
-    const response = await fetch(`${API_URL}/api/annotations/${id}/attachments`, {
+    const response = await apiFetch(`/api/annotations/${id}/attachments`, {
       method: 'POST',
       headers: { 'Content-Type': mime, 'X-Attachment-Kind': kind },
       body: blob,
@@ -97,14 +104,14 @@ export async function uploadAttachment(id, blob, kind, mime) {
 
 // Remove a single attachment (unlinks the file server-side).
 export async function deleteAttachment(id, attId) {
-  const response = await fetch(`${API_URL}/api/annotations/${id}/attachments/${attId}`, { method: 'DELETE' });
+  const response = await apiFetch(`/api/annotations/${id}/attachments/${attId}`, { method: 'DELETE' });
   if (!response.ok) throw new Error(`attachment delete error: ${response.status}`);
   return await response.json();
 }
 
 export async function deleteOne(id) {
   try {
-    const response = await fetch(`${API_URL}/api/annotations/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } });
+    const response = await apiFetch(`/api/annotations/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } });
     if (!response.ok) throw new Error(`API delete error: ${response.status}`);
     const result = await response.json();
     if (!result.success) throw new Error(result.error || 'Failed to delete annotation from API');
@@ -117,7 +124,7 @@ export async function deleteOne(id) {
 export async function smartSync(storageLockFn) {
   let serverAnnotations;
   try {
-    const response = await fetch(`${API_URL}/api/annotations?limit=0`);
+    const response = await apiFetch(`/api/annotations?limit=0`);
     if (!response.ok) return;
     const serverResult = await response.json();
     if (!Array.isArray(serverResult.annotations)) return;
@@ -154,7 +161,7 @@ export async function smartSync(storageLockFn) {
 
       if (changed) {
         try {
-          await fetch(`${API_URL}/api/annotations/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ annotations: merged }) });
+          await apiFetch(`/api/annotations/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ annotations: merged }) });
           let needsUpdate = false;
           for (const a of merged) { if (!a._synced) { a._synced = true; needsUpdate = true; } }
           if (needsUpdate) await chrome.storage.local.set({ annotations: merged });
@@ -178,9 +185,9 @@ export async function smartSync(storageLockFn) {
 
 export async function fetchAnnotations(url) {
   try {
-    let apiUrl = `${API_URL}/api/annotations`;
-    if (url) apiUrl += `?url=${encodeURIComponent(url)}`;
-    const response = await fetch(apiUrl);
+    let apiPath = '/api/annotations';
+    if (url) apiPath += `?url=${encodeURIComponent(url)}`;
+    const response = await apiFetch(apiPath);
     if (!response.ok) throw new Error(`API server error: ${response.status}`);
     const result = await response.json();
     return result.annotations || [];

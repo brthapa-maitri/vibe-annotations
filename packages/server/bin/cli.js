@@ -21,7 +21,9 @@ const program = new Command();
 const CONFIG_DIR = join(homedir(), '.vibe-annotations');
 const PID_FILE = join(CONFIG_DIR, 'server.pid');
 const LOG_FILE = join(CONFIG_DIR, 'server.log');
-const PORT = 3846;
+const PORT = Number(process.env.VIBE_PORT) || 3846;
+// Health checks go to loopback unless the server is bound to one specific address.
+const HEALTH_HOST = process.env.VIBE_HOST && process.env.VIBE_HOST !== '0.0.0.0' ? process.env.VIBE_HOST : '127.0.0.1';
 
 // Ensure config directory exists
 if (!existsSync(CONFIG_DIR)) {
@@ -50,7 +52,7 @@ function isServerRunning() {
 
 async function checkPort() {
   try {
-    const response = await fetch(`http://127.0.0.1:${PORT}/health`);
+    const response = await fetch(`http://${HEALTH_HOST}:${PORT}/health`);
     return response.ok;
   } catch (error) {
     return false;
@@ -122,7 +124,7 @@ program
       let attempts = 0;
       while (attempts < 10) {
         if (await checkPort()) {
-          console.log(chalk.green('✅ Vibe Annotations server running on http://127.0.0.1:3846/sse'));
+          console.log(chalk.green(`✅ Vibe Annotations server running on http://${HEALTH_HOST}:${PORT}/sse`));
           console.log(chalk.gray(`   PID: ${child.pid}`));
           console.log(chalk.gray(`   Logs: ${LOG_FILE}`));
           break;

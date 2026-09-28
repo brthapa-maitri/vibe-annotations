@@ -1,6 +1,6 @@
 import { execSync } from 'child_process';
 
-const PORT = 3846;
+const PORT = Number(process.env.VIBE_PORT) || 3846;
 const HEALTH_URL = `http://127.0.0.1:${PORT}/health`;
 
 export async function checkEnvironment() {

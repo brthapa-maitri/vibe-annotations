@@ -39,6 +39,7 @@ import { isRecordableHotkey } from './hotkey.js';
     stop: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>',
     copy: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>',
     trash: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>',
+    server: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg>',
     settings: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>',
     list: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18"/><path d="M3 6h18"/><path d="M3 18h18"/></svg>',
     close: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>',
@@ -599,6 +600,7 @@ import { isRecordableHotkey } from './hotkey.js';
     const statusLabel = serverOutdated ? 'Update available' : (serverOnline ? 'Online' : 'Offline');
 
     const route = vibeLocationPath(window.location);
+    const serverSettings = VibeAPI.getServerSettings();
 
     settingsDropdown.innerHTML = `
       <div class="vibe-settings-header">
@@ -646,6 +648,22 @@ import { isRecordableHotkey } from './hotkey.js';
             <span>Trigger hotkey</span>
           </div>
           <button class="vibe-shortcut-btn" type="button">${escapeHTML(shortcutHint)}</button>
+        </div>
+        <div class="vibe-settings-separator"></div>
+        <div class="vibe-settings-server">
+          <div class="vibe-settings-item-left">
+            ${ICONS.server}
+            <span>Server</span>
+            <span class="vibe-server-dot" style="background:${statusColor};" title="${statusLabel}"></span>
+          </div>
+          <input class="vibe-server-input vibe-server-url" type="url" spellcheck="false" autocomplete="off"
+            placeholder="${escapeHTML(serverSettings.defaultUrl)}" value="${escapeHTML(serverSettings.url === serverSettings.defaultUrl ? '' : serverSettings.url)}">
+          <input class="vibe-server-input vibe-server-token" type="password" spellcheck="false" autocomplete="off"
+            placeholder="Token (optional)" value="${escapeHTML(serverSettings.token)}">
+          <div class="vibe-server-actions">
+            <span class="vibe-server-msg">Empty = local server. Annotations live on the server you pick.</span>
+            <button class="vibe-server-save" type="button">Save</button>
+          </div>
         </div>
         <div class="vibe-settings-separator"></div>
         <button class="vibe-settings-link vibe-import-btn" type="button">
@@ -745,6 +763,23 @@ import { isRecordableHotkey } from './hotkey.js';
         applyBadgeColor(badgeColor);
         await VibeAPI.saveBadgeColor(badgeColor);
       });
+    });
+
+    // Server URL + token
+    const serverMsg = settingsDropdown.querySelector('.vibe-server-msg');
+    settingsDropdown.querySelector('.vibe-server-save').addEventListener('click', async () => {
+      const url = settingsDropdown.querySelector('.vibe-server-url').value.trim();
+      const token = settingsDropdown.querySelector('.vibe-server-token').value.trim();
+      if (url && !/^https?:\/\/[^\s/]+/i.test(url)) {
+        serverMsg.textContent = 'Enter a full URL, e.g. http://my-vps.tailnet.ts.net:3846';
+        return;
+      }
+      await VibeAPI.saveServerSettings({ url, token });
+      serverMsg.textContent = 'Saved — connecting…';
+      await refreshServerStatus();
+      serverMsg.textContent = serverOnline ? 'Connected.' : 'Saved, but the server is not reachable.';
+      const dot = settingsDropdown?.querySelector('.vibe-server-dot');
+      if (dot) dot.style.background = serverOnline ? 'var(--v-status-online)' : 'var(--v-status-offline)';
     });
 
     // Documentation

@@ -26,6 +26,30 @@ A (recommended) - [Use the MCP](https://vibe-annotations.com/docs/mcp-setup) to 
 
 B - Copy to your clipboard: **View all** > **Copy** and send to your AI coding agent.
 
+## Remote dev server (VPS, Tailscale, SSH box)
+
+If your frontend, the server and your AI agent all run on a remote machine, run the server there and point the extension at it:
+
+```bash
+# on the remote machine
+VIBE_TOKEN=some-long-secret \
+VIBE_ALLOWED_ORIGINS=https://my-vps.tailnet.ts.net \
+vibe-annotations-server start
+claude mcp add --transport http vibe-annotations http://127.0.0.1:3846/mcp \
+  --header "Authorization: Bearer some-long-secret"
+```
+
+Then in the extension: **Settings → Server**, enter `http://my-vps.tailnet.ts.net:3846` and the token, click **Save**. For a non-localhost frontend URL, click the extension icon on that page once to allow the site.
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `VIBE_PORT` | `3846` | Port to listen on |
+| `VIBE_HOST` | `0.0.0.0` | Address to bind (e.g. your Tailscale IP) |
+| `VIBE_ALLOWED_ORIGINS` | — | Extra page origins allowed by CORS, comma-separated |
+| `VIBE_TOKEN` | — | When set, the API and MCP endpoints require `Authorization: Bearer <token>` |
+
+Set `VIBE_TOKEN` whenever the server is reachable from other machines.
+
 ## Documentation
 
 Full docs at [**vibe-annotations.com/docs**](https://vibe-annotations.com/docs) — including [installation](https://vibe-annotations.com/docs/installation), [MCP setup](https://vibe-annotations.com/docs/mcp-setup), [workflows](https://vibe-annotations.com/docs/workflows), [architecture](https://vibe-annotations.com/docs/architecture), and [troubleshooting](https://vibe-annotations.com/docs/troubleshooting).

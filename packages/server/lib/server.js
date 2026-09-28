@@ -14,7 +14,7 @@ import { readFile, writeFile, mkdir, unlink, readdir } from 'fs/promises';
 import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { randomUUID } from 'crypto';
+import { randomUUID, timingSafeEqual } from 'crypto';
 import chalk from 'chalk';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -23,8 +23,18 @@ const __dirname = path.dirname(__filename);
 // Read version from package.json automatically
 const packageJson = JSON.parse(readFileSync(path.join(__dirname, '../package.json'), 'utf8'));
 
-// Configuration
-const PORT = 3846;
+// Configuration — defaults suit a local setup; the env vars let the server run
+// on a remote dev box (e.g. a VPS on Tailscale) that the extension points at.
+const PORT = Number(process.env.VIBE_PORT) || 3846;
+const HOST = process.env.VIBE_HOST || '0.0.0.0';
+// Extra page origins allowed by CORS, comma-separated exact origins
+// (e.g. "https://my-vps.tailnet.ts.net"). The extension itself is always allowed.
+const EXTRA_ORIGINS = new Set(
+  (process.env.VIBE_ALLOWED_ORIGINS || '').split(',').map(o => o.trim().replace(/\/+$/, '')).filter(Boolean)
+);
+// Optional shared secret. When set, the HTTP API and MCP endpoints require
+// "Authorization: Bearer <token>" (or ?token= for URLs that can't send headers).
+const TOKEN = (process.env.VIBE_TOKEN || '').trim();
 const DATA_DIR = path.join(process.env.HOME || process.env.USERPROFILE, '.vibe-annotations');
 const DATA_FILE = path.join(DATA_DIR, 'annotations.json');
 // Image attachments (auto element captures + user paste/upload) are stored as
@@ -38,6 +48,20 @@ const EXT_BY_MIME = { 'image/webp': 'webp', 'image/png': 'png', 'image/jpeg': 'j
 const extForMime = (mime) => EXT_BY_MIME[mime] || 'bin';
 const attachmentFileFor = (annotationId, att) =>
   path.join(ATTACH_DIR, `${annotationId}__${att.id}.${extForMime(att.mime)}`);
+
+function tokenMatches(candidate) {
+  const a = Buffer.from(String(candidate || ''));
+  const b = Buffer.from(TOKEN);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function requireToken(req, res, next) {
+  if (req.method === 'OPTIONS') return next(); // CORS preflight carries no credentials
+  const header = req.get('authorization') || '';
+  const bearer = header.startsWith('Bearer ') ? header.slice(7) : '';
+  if (tokenMatches(bearer) || tokenMatches(req.query.token)) return next();
+  res.status(401).json({ error: 'unauthorized', error_description: 'Missing or invalid VIBE_TOKEN.' });
+}
 
 class LocalAnnotationsServer {
   constructor() {
@@ -110,6 +134,7 @@ class LocalAnnotationsServer {
           || /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/.test(origin)
           || origin.startsWith('chrome-extension://')
           || origin.endsWith('.local') || origin.endsWith('.test') || origin.endsWith('.localhost')
+          || EXTRA_ORIGINS.has(origin)
         ) {
           cb(null, origin || '*');
         } else {
@@ -149,6 +174,8 @@ class LocalAnnotationsServer {
         timestamp: new Date().toISOString() 
       });
     });
+
+    if (TOKEN) this.app.use(['/api', '/mcp', '/sse', '/messages'], requireToken);
 
     // API endpoints for Chrome extension
     this.app.get('/api/annotations', async (req, res) => {
@@ -2056,13 +2083,16 @@ figcaption{padding:4px 8px;font-size:11px;color:#6b7280;background:#fafafa}
     // Node defaults to the IPv6 wildcard, which WSL2 NAT-mode localhost
     // forwarding doesn't relay back to Windows — Chrome extensions then
     // see "Failed to fetch" against 127.0.0.1:3846.
-    this.server = this.app.listen(PORT, '0.0.0.0', () => {
+    this.server = this.app.listen(PORT, HOST, () => {
       console.log(`Vibe Annotations server running on http://127.0.0.1:${PORT}`);
       console.log(`SSE Endpoint: http://127.0.0.1:${PORT}/sse`);
       console.log(`HTTP API: http://127.0.0.1:${PORT}/api/annotations`);
       console.log(`MCP Endpoint: http://127.0.0.1:${PORT}/mcp`);
       console.log(`Health: http://127.0.0.1:${PORT}/health`);
       console.log(`Data: ${DATA_FILE}`);
+      if (HOST !== '0.0.0.0') console.log(`Bound to: ${HOST}`);
+      if (EXTRA_ORIGINS.size) console.log(`Extra CORS origins: ${[...EXTRA_ORIGINS].join(', ')}`);
+      if (TOKEN) console.log('Token auth: enabled');
       console.log('\nServer ready to handle requests');
     });
     

@@ -3,7 +3,8 @@
 
 import { isSupportedUrl, isLocalhostUrl } from '../lib/background/url-filter.js';
 import { updateBadge, clearBadge, updateBadgeForUrl, updateAllBadges } from '../lib/background/badge.js';
-import { isConnected, checkConnection, syncAll, saveOne, deleteOne, smartSync, fetchAnnotations, uploadAttachment, deleteAttachment } from '../lib/background/api-sync.js';
+import { isConnected, checkConnection, syncAll, saveOne, deleteOne, smartSync, fetchAnnotations, uploadAttachment, deleteAttachment, apiFetch } from '../lib/background/api-sync.js';
+import { onServerConfigChanged } from '../lib/server-config.js';
 import { formatExport } from '../lib/background/export.js';
 import { migrateSyncFlags } from '../lib/background/utils.js';
 
@@ -200,6 +201,11 @@ class VibeAnnotationsBackground {
           break;
         case 'forceMCPSync':
           this.forceAPISync()
+            .then(result => sendResponse({ success: true, ...result }))
+            .catch(error => sendResponse({ success: false, error: error.message }));
+          break;
+        case 'serverRequest':
+          this.serverRequest(request)
             .then(result => sendResponse({ success: true, ...result }))
             .catch(error => sendResponse({ success: false, error: error.message }));
           break;
@@ -468,9 +474,33 @@ class VibeAnnotationsBackground {
     }
   }
 
+  // Relay a request to the server for content scripts that can't reach it
+  // directly (non-local page origin: CORS / mixed content; remote server).
+  // Restricted to the HTTP API. `as` picks the response shape.
+  async serverRequest({ path, method = 'GET', as = 'json' }) {
+    if (typeof path !== 'string' || !path.startsWith('/api/')) throw new Error('invalid server path');
+    const res = await apiFetch(path, { method, signal: AbortSignal.timeout(15000) });
+    const mime = res.headers.get('Content-Type') || 'text/plain';
+    if (!res.ok) return { ok: false, status: res.status };
+    if (as === 'text') return { ok: true, status: res.status, mime, body: await res.text() };
+    if (as === 'dataUrl') {
+      const buf = new Uint8Array(await res.arrayBuffer());
+      let bin = '';
+      for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+      return { ok: true, status: res.status, mime, body: `data:${mime};base64,${btoa(bin)}` };
+    }
+    return { ok: true, status: res.status, mime, body: await res.json() };
+  }
+
   // --- Connection monitoring ---
 
   startConnectionMonitoring() {
+    // Server URL / token changed in Settings → re-check and resync right away.
+    onServerConfigChanged(async () => {
+      await checkConnection();
+      await updateAllBadges();
+      if (isConnected()) await smartSync(fn => this._withStorageLock(fn));
+    });
     checkConnection().then(() => updateAllBadges());
     setInterval(async () => {
       const wasConnected = isConnected();

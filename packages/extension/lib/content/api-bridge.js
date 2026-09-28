@@ -1,7 +1,14 @@
 // Wraps all chrome.runtime.sendMessage and chrome.storage calls
 // Single interface for data operations used by all modules
 
-const SERVER_URL = 'http://127.0.0.1:3846';
+import { DEFAULT_SERVER_URL, getServerConfig, saveServerConfig, onServerConfigChanged, isLoopbackServer, authHeaders, withTokenParam } from '../server-config.js';
+
+// Configured server (Settings → Server). Loaded async; the default covers the
+// first few ms before storage answers.
+let serverConfig = { url: DEFAULT_SERVER_URL, token: '' };
+getServerConfig().then(c => { serverConfig = c; });
+onServerConfigChanged(async () => { serverConfig = await getServerConfig(); clearStatusCache(); });
+
 let statusCache = null;
 let statusCacheTime = 0;
 const CACHE_TTL = 2000;
@@ -33,6 +40,36 @@ function isServerOutdated(version) {
       || h.endsWith('.local') || h.endsWith('.test') || h.endsWith('.localhost');
   }
 
+  // Can this page fetch the server itself? Only a local page talking to a local
+  // server — anything else (non-local page: CORS / mixed content; remote server)
+  // goes through the background, which the server always accepts.
+  function canReachServerDirectly() {
+    return !isFileProtocol() && isLocalOrigin() && isLoopbackServer(serverConfig.url);
+  }
+
+  function serverFetch(path, init = {}) {
+    return fetch(`${serverConfig.url}${path}`, {
+      ...init, headers: { ...(init.headers || {}), ...authHeaders(serverConfig.token) },
+    });
+  }
+
+  // Relay through the background (see serverRequest there).
+  async function serverFetchViaBg(path, { method = 'GET', as = 'json' } = {}) {
+    const r = await chrome.runtime.sendMessage({ action: 'serverRequest', path, method, as });
+    if (!r || !r.success) throw new Error(r?.error || 'server request failed');
+    return r;
+  }
+
+  function getServerSettings() {
+    return { ...serverConfig, defaultUrl: DEFAULT_SERVER_URL };
+  }
+
+  async function saveServerSettings(settings) {
+    await saveServerConfig(settings);
+    serverConfig = await getServerConfig();
+    clearStatusCache();
+  }
+
   // --- Server status ---
 
   async function checkServerStatus() {
@@ -41,12 +78,11 @@ function isServerOutdated(version) {
 
     let status;
 
-    if (isFileProtocol() || !isLocalOrigin()) {
-      // Non-local origins can't fetch localhost directly (CORS) — route via background
+    if (!canReachServerDirectly()) {
       status = await _checkViaBg();
     } else {
       try {
-        const res = await fetch(`${SERVER_URL}/health`, {
+        const res = await serverFetch('/health', {
           method: 'GET',
           signal: AbortSignal.timeout(2000),
           mode: 'cors',
@@ -149,7 +185,14 @@ function isServerOutdated(version) {
 
   // Server URL that serves an attachment's bytes (img src on localhost, open-in-tab anywhere).
   function attachmentUrl(annotationId, attId) {
-    return `${SERVER_URL}/api/annotations/${annotationId}/attachments/${attId}`;
+    return withTokenParam(`${serverConfig.url}/api/annotations/${annotationId}/attachments/${attId}`, serverConfig.token);
+  }
+
+  // Attachment bytes as a data URL, fetched by the background — for thumbnails
+  // on pages that can't load the server URL directly.
+  async function attachmentDataUrl(annotationId, attId) {
+    const r = await serverFetchViaBg(`/api/annotations/${annotationId}/attachments/${attId}`, { as: 'dataUrl' });
+    return r.ok ? r.body : null;
   }
 
   // Upload a user image (paste/drop/file-picker). On local origins we POST the
@@ -158,12 +201,12 @@ function isServerOutdated(version) {
   // a transient data URL and it uploads. Either way the background mirrors the new
   // attachment into chrome.storage so the UI can render it immediately.
   async function uploadUserImage(annotationId, blob, mime, kind = 'user') {
-    if (isLocalOrigin()) {
+    if (canReachServerDirectly()) {
       // Retry on 404: a brand-new annotation's server-side create can lag behind
       // this upload, so the annotation may not exist for a moment.
       let res;
       for (let i = 0; i < 5; i++) {
-        res = await fetch(`${SERVER_URL}/api/annotations/${annotationId}/attachments`, {
+        res = await serverFetch(`/api/annotations/${annotationId}/attachments`, {
           method: 'POST',
           headers: { 'Content-Type': mime, 'X-Attachment-Kind': kind },
           body: blob,
@@ -355,25 +398,32 @@ function isServerOutdated(version) {
   }
 
   // Fetch a shareable export (markdown or self-contained HTML) from the server.
-  // Direct fetch works on local origins (the export is a localhost-dev feature).
   async function getShareExport(urlPattern, format) {
-    const res = await fetch(
-      `${SERVER_URL}/api/export?url=${encodeURIComponent(urlPattern)}&format=${encodeURIComponent(format)}`,
-      { signal: AbortSignal.timeout(15000) }
-    );
+    const path = `/api/export?url=${encodeURIComponent(urlPattern)}&format=${encodeURIComponent(format)}`;
+    if (!canReachServerDirectly()) {
+      const r = await serverFetchViaBg(path, { as: 'text' });
+      if (!r.ok) throw new Error(`export failed: ${r.status}`);
+      return { content: r.body, mime: r.mime };
+    }
+    const res = await serverFetch(path, { signal: AbortSignal.timeout(15000) });
     if (!res.ok) throw new Error(`export failed: ${res.status}`);
     return { content: await res.text(), mime: res.headers.get('Content-Type') || 'text/plain' };
   }
 
   async function stopWatchers() {
     try {
-      await fetch(`${SERVER_URL}/api/watchers/stop`, { method: 'POST', signal: AbortSignal.timeout(2000) });
+      if (!canReachServerDirectly()) { await serverFetchViaBg('/api/watchers/stop', { method: 'POST' }); return; }
+      await serverFetch('/api/watchers/stop', { method: 'POST', signal: AbortSignal.timeout(2000) });
     } catch { /* ignore */ }
   }
 
   async function getWatchers() {
     try {
-      const res = await fetch(`${SERVER_URL}/api/watchers`, {
+      if (!canReachServerDirectly()) {
+        const r = await serverFetchViaBg('/api/watchers');
+        return r.ok ? r.body : { watchers: [], watching: false };
+      }
+      const res = await serverFetch('/api/watchers', {
         signal: AbortSignal.timeout(2000),
       });
       if (!res.ok) return { watchers: [], watching: false };
@@ -388,6 +438,9 @@ const VibeAPI = {
   clearStatusCache,
   isFileProtocol,
   isLocalOrigin,
+  canReachServerDirectly,
+  getServerSettings,
+  saveServerSettings,
   loadAnnotations,
   loadProjectAnnotations,
   saveAnnotation,
@@ -398,6 +451,7 @@ const VibeAPI = {
   captureScreenshot,
   captureVisibleTab,
   attachmentUrl,
+  attachmentDataUrl,
   uploadUserImage,
   removeAttachment,
   onAnnotationsChanged,
