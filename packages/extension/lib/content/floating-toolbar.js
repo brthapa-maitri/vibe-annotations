@@ -1012,6 +1012,9 @@ import { isRecordableHotkey } from './hotkey.js';
 
     toolbarEl.addEventListener('mousedown', (e) => {
       if (e.target.closest('.vibe-toolbar-btn') || e.target.closest('.vibe-toolbar-close') || e.target.closest('.vibe-toolbar-status') || e.target.closest('.vibe-toolbar-kbd')) return;
+      // The settings dropdown lives inside the toolbar; dragging from it would
+      // preventDefault the mousedown and keep its inputs from taking focus.
+      if (e.target.closest('.vibe-settings-dropdown')) return;
 
       isDragging = true;
       didDrag = false;
