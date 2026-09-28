@@ -90,7 +90,12 @@ function isServerOutdated(version) {
         });
         let version = null;
         if (res.ok) { try { version = (await res.json())?.version || null; } catch { /* older server / bad body */ } }
-        status = { connected: res.ok, version };
+        status = { connected: res.ok, version, user: null, authError: false };
+        if (res.ok) {
+          const who = await serverFetch('/api/whoami', { signal: AbortSignal.timeout(2000) });
+          if (who.status === 401) status = { connected: false, version, user: null, authError: true };
+          else if (who.ok) status.user = (await who.json()).user || null;
+        }
       } catch {
         status = await _checkViaBg();
       }
@@ -106,9 +111,9 @@ function isServerOutdated(version) {
     try {
       const r = await chrome.runtime.sendMessage({ action: 'checkMCPStatus' });
       const s = r && r.success && r.status;
-      return { connected: !!(s && s.connected), version: s ? s.server_version : null };
+      return { connected: !!(s && s.connected), version: s ? s.server_version : null, user: s?.user || null, authError: !!s?.auth_error };
     } catch {
-      return { connected: false, version: null };
+      return { connected: false, version: null, user: null, authError: false };
     }
   }
 

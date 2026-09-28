@@ -50,6 +50,22 @@ Then in the extension: **Settings → Server**, enter `http://my-vps.tailnet.ts.
 
 Set `VIBE_TOKEN` whenever the server is reachable from other machines.
 
+### Team mode (one server, many people)
+
+Give each person their own token instead of sharing one:
+
+```bash
+vibe-annotations-server users add alice --name "Alice Smith"   # prints Alice's token once
+vibe-annotations-server users list | rotate <id> | remove <id>
+```
+
+Adding the first user switches the server to team mode (live, no restart; `VIBE_TOKEN` is then ignored). Users are stored in `~/.vibe-annotations/users.json` (token hashes only, override with `VIBE_USERS_FILE`).
+
+- Each person puts **their** token in the extension (Settings → Server shows "Connected as …") and in their agent's MCP config (`--header "Authorization: Bearer <token>"`).
+- Every annotation is owned by whoever made it (`created_by`). Extensions only see and sync their owner's annotations, so teammates never overwrite each other.
+- Agents act as their human: `read_annotations` / `watch_annotations` return your own annotations by default, `scope: "team"` shows everyone's, and update/delete only work on your own.
+- Removing a user revokes their token immediately; their annotations stay.
+
 ## Documentation
 
 Full docs at [**vibe-annotations.com/docs**](https://vibe-annotations.com/docs) — including [installation](https://vibe-annotations.com/docs/installation), [MCP setup](https://vibe-annotations.com/docs/mcp-setup), [workflows](https://vibe-annotations.com/docs/workflows), [architecture](https://vibe-annotations.com/docs/architecture), and [troubleshooting](https://vibe-annotations.com/docs/troubleshooting).

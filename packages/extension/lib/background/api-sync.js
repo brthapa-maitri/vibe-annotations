@@ -35,7 +35,15 @@ export async function checkConnection() {
           if ((extensionParts[i] || 0) > (minParts[i] || 0)) break;
         }
       }
-      return { connected: true, server_url: API_URL, server_version: data.version, server_status: data.status, version_compatible: versionCompatible, compatibility_message: compatibilityMessage, last_check: new Date().toISOString() };
+      // /health is public; whoami proves the token works and names its owner.
+      // Older servers have no whoami (404) — treat as connected, no identity.
+      const who = await apiFetch('/api/whoami', { signal: AbortSignal.timeout(5000) });
+      if (who.status === 401) {
+        connected = false;
+        return { connected: false, auth_error: true, server_url: API_URL, server_version: data.version, error: 'Invalid or missing token', last_check: new Date().toISOString() };
+      }
+      const user = who.ok ? (await who.json()).user || null : null;
+      return { connected: true, user, server_url: API_URL, server_version: data.version, server_status: data.status, version_compatible: versionCompatible, compatibility_message: compatibilityMessage, last_check: new Date().toISOString() };
     } else {
       connected = false;
       return { connected: false, server_url: API_URL, error: `Server returned ${response.status}`, last_check: new Date().toISOString() };

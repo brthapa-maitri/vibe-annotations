@@ -767,6 +767,10 @@ import { isRecordableHotkey } from './hotkey.js';
 
     // Server URL + token
     const serverMsg = settingsDropdown.querySelector('.vibe-server-msg');
+    VibeAPI.checkServerStatus().then(status => {
+      if (status.user) serverMsg.textContent = `Connected as ${status.user.name}.`;
+      else if (status.authError) serverMsg.textContent = 'The server rejected this token.';
+    });
     settingsDropdown.querySelector('.vibe-server-save').addEventListener('click', async () => {
       const url = settingsDropdown.querySelector('.vibe-server-url').value.trim();
       const token = settingsDropdown.querySelector('.vibe-server-token').value.trim();
@@ -776,8 +780,11 @@ import { isRecordableHotkey } from './hotkey.js';
       }
       await VibeAPI.saveServerSettings({ url, token });
       serverMsg.textContent = 'Saved — connecting…';
+      const status = await VibeAPI.checkServerStatus();
       await refreshServerStatus();
-      serverMsg.textContent = serverOnline ? 'Connected.' : 'Saved, but the server is not reachable.';
+      serverMsg.textContent = status.authError ? 'Server reachable, but the token was rejected.'
+        : !serverOnline ? 'Saved, but the server is not reachable.'
+        : status.user ? `Connected as ${status.user.name}.` : 'Connected.';
       const dot = settingsDropdown?.querySelector('.vibe-server-dot');
       if (dot) dot.style.background = serverOnline ? 'var(--v-status-online)' : 'var(--v-status-offline)';
     });

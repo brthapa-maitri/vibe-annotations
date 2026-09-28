@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import chalk from 'chalk';
 import { homedir } from 'os';
 import fs from 'fs';
+import { USERS_FILE, loadUsers, addUser, rotateUser, removeUser } from '../lib/users.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -248,5 +249,49 @@ program
       const tail = spawn('tail', ['-n', options.lines, LOG_FILE], { stdio: 'inherit' });
     }
   });
+
+// Team mode — per-user tokens. Adding the first user switches the server to
+// team mode (picked up live, no restart).
+const users = program
+  .command('users')
+  .description('Manage team members (per-user tokens for a shared server)');
+
+function printToken(id, token) {
+  console.log(chalk.green(`Token for ${id} (shown once — store it now):`));
+  console.log(`\n  ${token}\n`);
+  console.log(chalk.gray('Extension: Settings → Server → Token'));
+  console.log(chalk.gray(`Claude Code: claude mcp add --scope user --transport http vibe-annotations <server-url>/mcp --header "Authorization: Bearer ${token}"`));
+}
+
+function runUsersCommand(fn) {
+  return (...args) => {
+    try { fn(...args); } catch (err) { console.error(chalk.red(err.message)); process.exitCode = 1; }
+  };
+}
+
+users
+  .command('add <id>')
+  .description('Add a team member and print their token')
+  .option('-n, --name <name>', 'Display name')
+  .action(runUsersCommand((id, options) => printToken(id, addUser(id, options.name))));
+
+users
+  .command('list')
+  .description('List team members')
+  .action(runUsersCommand(() => {
+    const all = loadUsers();
+    if (!all.length) { console.log(chalk.gray(`No users — server runs in single-user mode. (${USERS_FILE})`)); return; }
+    for (const u of all) console.log(`${u.id.padEnd(20)} ${u.name || ''}`);
+  }));
+
+users
+  .command('rotate <id>')
+  .description('Issue a new token for a member (the old one stops working)')
+  .action(runUsersCommand((id) => printToken(id, rotateUser(id))));
+
+users
+  .command('remove <id>')
+  .description('Remove a member (their token stops working; their annotations stay)')
+  .action(runUsersCommand((id) => { removeUser(id); console.log(chalk.green(`Removed ${id}`)); }));
 
 program.parse(process.argv);

@@ -16,6 +16,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID, timingSafeEqual } from 'crypto';
 import chalk from 'chalk';
+import { teamModeEnabled, userForToken, requestContext, currentUser, currentScope, ownerId, USERS_FILE } from './users.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -55,12 +56,28 @@ function tokenMatches(candidate) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-function requireToken(req, res, next) {
-  if (req.method === 'OPTIONS') return next(); // CORS preflight carries no credentials
+function presentedToken(req) {
   const header = req.get('authorization') || '';
-  const bearer = header.startsWith('Bearer ') ? header.slice(7) : '';
-  if (tokenMatches(bearer) || tokenMatches(req.query.token)) return next();
-  res.status(401).json({ error: 'unauthorized', error_description: 'Missing or invalid VIBE_TOKEN.' });
+  return header.startsWith('Bearer ') ? header.slice(7) : (req.query.token || '');
+}
+
+// Team mode (users file has users): each token maps to a person, and the rest
+// of the request runs as them (see requestContext). Otherwise the optional
+// shared VIBE_TOKEN, otherwise open (local default).
+function authenticate(req, res, next) {
+  if (req.method === 'OPTIONS') return next(); // CORS preflight carries no credentials
+  if (teamModeEnabled()) {
+    const token = presentedToken(req);
+    const user = userForToken(token);
+    if (!user) return res.status(401).json({ error: 'unauthorized', error_description: 'Missing or invalid user token.' });
+    // req.auth reaches MCP tool handlers as extra.authInfo.
+    req.auth = { token, clientId: user.id, scopes: [], extra: { user } };
+    return requestContext.run({ user, scope: 'own' }, next);
+  }
+  if (TOKEN && !tokenMatches(presentedToken(req))) {
+    return res.status(401).json({ error: 'unauthorized', error_description: 'Missing or invalid VIBE_TOKEN.' });
+  }
+  next();
 }
 
 class LocalAnnotationsServer {
@@ -171,11 +188,17 @@ class LocalAnnotationsServer {
         status: 'ok', 
         version: packageJson.version,
         minExtensionVersion: '1.0.0', // Minimum compatible extension version
+        auth: teamModeEnabled() ? 'users' : (TOKEN ? 'token' : 'none'),
         timestamp: new Date().toISOString() 
       });
     });
 
-    if (TOKEN) this.app.use(['/api', '/mcp', '/sse', '/messages'], requireToken);
+    this.app.use(['/api', '/mcp', '/sse', '/messages'], authenticate);
+
+    // Who the presented token belongs to (extension shows "Connected as …").
+    this.app.get('/api/whoami', (req, res) => {
+      res.json({ team_mode: teamModeEnabled(), user: currentUser() });
+    });
 
     // API endpoints for Chrome extension
     this.app.get('/api/annotations', async (req, res) => {
@@ -635,6 +658,12 @@ class LocalAnnotationsServer {
             inputSchema: {
               type: 'object',
               properties: {
+                scope: {
+                  type: 'string',
+                  enum: ['own', 'team'],
+                  default: 'own',
+                  description: 'Team servers only: "own" (default) = annotations made by the user you act for; "team" = everyone\'s, each with a created_by owner. Use "team" only when the user asks about teammates\' feedback. You can only update/delete your own user\'s annotations.'
+                },
                 status: {
                   type: 'string',
                   enum: ['pending', 'completed', 'archived', 'all'],
@@ -688,6 +717,12 @@ class LocalAnnotationsServer {
             inputSchema: {
               type: 'object',
               properties: {
+                scope: {
+                  type: 'string',
+                  enum: ['own', 'team'],
+                  default: 'own',
+                  description: 'Team servers only: "own" (default) = annotations made by the user you act for; "team" = everyone\'s, each with a created_by owner. Use "team" only when the user asks about teammates\' feedback. You can only update/delete your own user\'s annotations.'
+                },
                 url: {
                   type: 'string',
                   description: 'Complete localhost development URL (e.g., "http://localhost:3000/dashboard") to analyze for project context and framework inference'
@@ -723,6 +758,12 @@ class LocalAnnotationsServer {
             inputSchema: {
               type: 'object',
               properties: {
+                scope: {
+                  type: 'string',
+                  enum: ['own', 'team'],
+                  default: 'own',
+                  description: 'Team servers only: "own" (default) = annotations made by the user you act for; "team" = everyone\'s, each with a created_by owner. Use "team" only when the user asks about teammates\' feedback. You can only update/delete your own user\'s annotations.'
+                },
                 id: {
                   type: 'string',
                   description: 'Annotation ID to get screenshot for'
@@ -738,6 +779,12 @@ class LocalAnnotationsServer {
             inputSchema: {
               type: 'object',
               properties: {
+                scope: {
+                  type: 'string',
+                  enum: ['own', 'team'],
+                  default: 'own',
+                  description: 'Team servers only: "own" (default) = annotations made by the user you act for; "team" = everyone\'s, each with a created_by owner. Use "team" only when the user asks about teammates\' feedback. You can only update/delete your own user\'s annotations.'
+                },
                 url: {
                   type: 'string',
                   description: 'Localhost URL pattern to watch (e.g., "http://localhost:3000/*" or "http://localhost:5173/*"). Required — ask the user if unknown.'
@@ -792,144 +839,13 @@ class LocalAnnotationsServer {
       };
     });
 
-    server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      const { name, arguments: args } = request.params;
-
-      try {
-        switch (name) {
-          case 'read_annotations': {
-            const result = await this.readAnnotations(args || {});
-            const { annotations, projectInfo, multiProjectWarning } = result;
-
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: JSON.stringify({
-                    tool: 'read_annotations',
-                    status: 'success',
-                    data: annotations,
-                    count: annotations.length,
-                    projects: projectInfo,
-                    multi_project_warning: multiProjectWarning,
-                    filter_applied: args?.url || 'none',
-                    timestamp: new Date().toISOString()
-                  }, null, 2)
-                }
-              ]
-            };
-          }
-
-          case 'delete_annotation': {
-            const result = await this.deleteAnnotation(args);
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: JSON.stringify({
-                    tool: 'delete_annotation',
-                    status: 'success',
-                    data: result,
-                    timestamp: new Date().toISOString()
-                  }, null, 2)
-                }
-              ]
-            };
-          }
-
-          case 'get_project_context': {
-            const context = await this.getProjectContext(args);
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: JSON.stringify({
-                    tool: 'get_project_context',
-                    status: 'success',
-                    data: context,
-                    timestamp: new Date().toISOString()
-                  }, null, 2)
-                }
-              ]
-            };
-          }
-
-          case 'delete_project_annotations': {
-            const result = await this.deleteProjectAnnotations(args);
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: JSON.stringify({
-                    tool: 'delete_project_annotations',
-                    status: 'success',
-                    data: result,
-                    timestamp: new Date().toISOString()
-                  }, null, 2)
-                }
-              ]
-            };
-          }
-
-          case 'get_annotation_screenshot': {
-            const result = await this.getAnnotationScreenshot(args);
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: JSON.stringify({
-                    tool: 'get_annotation_screenshot',
-                    status: 'success',
-                    data: result,
-                    timestamp: new Date().toISOString()
-                  }, null, 2)
-                }
-              ]
-            };
-          }
-
-          case 'watch_annotations': {
-            const result = await this.watchAnnotations(args || {});
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: JSON.stringify({
-                    tool: 'watch_annotations',
-                    status: result.timeout ? 'timeout' : 'success',
-                    data: result.annotations || [],
-                    count: result.annotations?.length || 0,
-                    message: result.message,
-                    timestamp: new Date().toISOString()
-                  }, null, 2)
-                }
-              ]
-            };
-          }
-
-          case 'update_annotation': {
-            const result = await this.updateAnnotation(args || {});
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: JSON.stringify({
-                    tool: 'update_annotation',
-                    status: 'success',
-                    data: result,
-                    timestamp: new Date().toISOString()
-                  }, null, 2)
-                }
-              ]
-            };
-          }
-
-          default:
-            throw new Error(`Unknown tool: ${name}`);
-        }
-      } catch (error) {
-        throw new Error(`Tool execution failed: ${error.message}`);
-      }
+    server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+      // Team mode: run the tool as the token's owner. scope:"team" widens reads
+      // to everyone's annotations; writes stay limited to your own.
+      const user = extra?.authInfo?.extra?.user || null;
+      if (!user) return this.callTool(request);
+      const scope = request.params.arguments?.scope === 'team' ? 'team' : 'own';
+      return requestContext.run({ user, scope }, () => this.callTool(request));
     });
 
     server.onerror = (error) => {
@@ -937,7 +853,189 @@ class LocalAnnotationsServer {
     };
   }
 
+  async callTool(request) {
+    const { name, arguments: args } = request.params;
+
+    try {
+      switch (name) {
+        case 'read_annotations': {
+          const result = await this.readAnnotations(args || {});
+          const { annotations, projectInfo, multiProjectWarning } = result;
+
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  tool: 'read_annotations',
+                  status: 'success',
+                  data: annotations,
+                  count: annotations.length,
+                  projects: projectInfo,
+                  multi_project_warning: multiProjectWarning,
+                  filter_applied: args?.url || 'none',
+                  timestamp: new Date().toISOString()
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        case 'delete_annotation': {
+          const result = await this.deleteAnnotation(args);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  tool: 'delete_annotation',
+                  status: 'success',
+                  data: result,
+                  timestamp: new Date().toISOString()
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        case 'get_project_context': {
+          const context = await this.getProjectContext(args);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  tool: 'get_project_context',
+                  status: 'success',
+                  data: context,
+                  timestamp: new Date().toISOString()
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        case 'delete_project_annotations': {
+          const result = await this.deleteProjectAnnotations(args);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  tool: 'delete_project_annotations',
+                  status: 'success',
+                  data: result,
+                  timestamp: new Date().toISOString()
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        case 'get_annotation_screenshot': {
+          const result = await this.getAnnotationScreenshot(args);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  tool: 'get_annotation_screenshot',
+                  status: 'success',
+                  data: result,
+                  timestamp: new Date().toISOString()
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        case 'watch_annotations': {
+          const result = await this.watchAnnotations(args || {});
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  tool: 'watch_annotations',
+                  status: result.timeout ? 'timeout' : 'success',
+                  data: result.annotations || [],
+                  count: result.annotations?.length || 0,
+                  message: result.message,
+                  timestamp: new Date().toISOString()
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        case 'update_annotation': {
+          const result = await this.updateAnnotation(args || {});
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  tool: 'update_annotation',
+                  status: 'success',
+                  data: result,
+                  timestamp: new Date().toISOString()
+                }, null, 2)
+              }
+            ]
+          };
+        }
+
+        default:
+          throw new Error(`Unknown tool: ${name}`);
+      }
+    } catch (error) {
+      throw new Error(`Tool execution failed: ${error.message}`);
+    }
+  }
+
+  // Annotations visible to the current request: all of them outside team mode
+  // (or with scope "team"), otherwise only the caller's own.
   async loadAnnotations() {
+    const all = await this.loadAllAnnotations();
+    const user = currentUser();
+    if (!user || currentScope() === 'team') return all;
+    return all.filter(a => ownerId(a) === user.id);
+  }
+
+  // Replace the caller's slice. Outside team mode that's everything (today's
+  // behaviour). In team mode other people's annotations are always preserved
+  // and never modified; new ones are stamped with the caller as owner.
+  async saveAnnotations(annotations) {
+    const user = currentUser();
+    if (!user) return this.saveAllAnnotations(annotations);
+    this.saveLock = this.saveLock.then(async () => {
+      const stored = await this.loadAllAnnotations();
+      const byId = new Map(stored.map(a => [a.id, a]));
+      const kept = [];
+      for (const a of annotations) {
+        const prev = byId.get(a.id);
+        if (prev && ownerId(prev) && ownerId(prev) !== user.id) continue; // not yours
+        kept.push({ ...a, created_by: prev?.created_by || { id: user.id, name: user.name } });
+      }
+      const keptIds = new Set(kept.map(a => a.id));
+      const preserved = stored.filter(a => !keptIds.has(a.id) && ownerId(a) !== user.id);
+      return this._saveAnnotationsInternal([...preserved, ...kept]);
+    });
+    return this.saveLock;
+  }
+
+  // Team mode: an id missing from your view may be a teammate's. Say so rather
+  // than reporting "not found" / "already deleted" as if it were handled.
+  async assertNotSomeoneElses(id) {
+    const user = currentUser();
+    if (!user) return;
+    const other = (await this.loadAllAnnotations()).find(a => a.id === id);
+    if (other && ownerId(other) !== user.id) {
+      throw new Error(`Annotation ${id} belongs to ${other.created_by?.name || 'another user'} — only they (or their agent) can change or delete it.`);
+    }
+  }
+
+  async loadAllAnnotations() {
     try {
       if (!existsSync(DATA_FILE)) {
         await this.ensureDataFile();
@@ -948,7 +1046,7 @@ class LocalAnnotationsServer {
       // Handle empty or corrupted file
       if (!data || data.trim() === '') {
         console.warn('Empty annotations file, initializing with empty array');
-        await this.saveAnnotations([]);
+        await this.saveAllAnnotations([]);
         return [];
       }
       
@@ -962,7 +1060,7 @@ class LocalAnnotationsServer {
         console.log(`Corrupted file backed up to: ${backupFile}`);
         
         // Reinitialize with empty array
-        await this.saveAnnotations([]);
+        await this.saveAllAnnotations([]);
         return [];
       }
     } catch (error) {
@@ -971,7 +1069,7 @@ class LocalAnnotationsServer {
     }
   }
 
-  async saveAnnotations(annotations) {
+  async saveAllAnnotations(annotations) {
     // Serialize all save operations to prevent race conditions
     this.saveLock = this.saveLock.then(async () => {
       return this._saveAnnotationsInternal(annotations);
@@ -1457,7 +1555,10 @@ figcaption{padding:4px 8px;font-size:11px;color:#6b7280;background:#fafafa}
     if (!id || typeof id !== 'string') throw new Error('update_annotation requires "id" (string annotation id)');
     const annotations = await this.loadAnnotations();
     const idx = annotations.findIndex(a => a.id === id);
-    if (idx === -1) throw new Error(`Annotation ${id} not found`);
+    if (idx === -1) {
+      await this.assertNotSomeoneElses(id);
+      throw new Error(`Annotation ${id} not found`);
+    }
     const ann = annotations[idx];
     const updates = {};
 
@@ -1645,6 +1746,7 @@ figcaption{padding:4px 8px;font-size:11px;color:#6b7280;background:#fafafa}
     const index = annotations.findIndex(a => a.id === id);
     
     if (index === -1) {
+      await this.assertNotSomeoneElses(id);
       // Already gone — treat as success (extension may have synced/removed it)
       return { id, deleted: true, message: `Annotation ${id} already deleted or not found` };
     }
@@ -2092,7 +2194,8 @@ figcaption{padding:4px 8px;font-size:11px;color:#6b7280;background:#fafafa}
       console.log(`Data: ${DATA_FILE}`);
       if (HOST !== '0.0.0.0') console.log(`Bound to: ${HOST}`);
       if (EXTRA_ORIGINS.size) console.log(`Extra CORS origins: ${[...EXTRA_ORIGINS].join(', ')}`);
-      if (TOKEN) console.log('Token auth: enabled');
+      if (teamModeEnabled()) console.log(`Team mode: per-user tokens from ${USERS_FILE}`);
+      else if (TOKEN) console.log('Token auth: enabled');
       console.log('\nServer ready to handle requests');
     });
     
