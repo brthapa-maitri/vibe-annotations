@@ -8,7 +8,8 @@ import { fileURLToPath } from 'url';
 import chalk from 'chalk';
 import { homedir } from 'os';
 import fs from 'fs';
-import { USERS_FILE, loadUsers, addUser, rotateUser, removeUser } from '../lib/users.js';
+import { USERS_FILE, loadUsers, addUser, rotateUser, removeUser, userForToken } from '../lib/users.js';
+import { writeOnboardingDoc } from '../lib/onboarding.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -263,6 +264,25 @@ function printToken(id, token) {
   console.log(chalk.gray(`Claude Code: claude mcp add --scope user --transport http vibe-annotations <server-url>/mcp --header "Authorization: Bearer ${token}"`));
 }
 
+// URL teammates use to reach this server (goes into their setup guide).
+const PUBLIC_URL_HELP = 'Server URL teammates use (default: $VIBE_PUBLIC_URL)';
+function publicUrl(options) {
+  const url = (options.serverUrl || process.env.VIBE_PUBLIC_URL || '').replace(/\/+$/, '');
+  if (!url) throw new Error('Pass --server-url <url> or set VIBE_PUBLIC_URL (e.g. http://my-vps.tailnet.ts.net:3846).');
+  return url;
+}
+
+function issue(id, token, options) {
+  if (!options.doc) return printToken(id, token);
+  const user = loadUsers().find(u => u.id === id);
+  const file = writeOnboardingDoc(
+    { id, name: user?.name || id, token, serverUrl: publicUrl(options) },
+    typeof options.doc === 'string' ? options.doc : undefined
+  );
+  console.log(chalk.green(`Setup guide for ${id} written to ${file}`));
+  console.log(chalk.gray('It contains their token — send it privately, then delete it.'));
+}
+
 function runUsersCommand(fn) {
   return (...args) => {
     try { fn(...args); } catch (err) { console.error(chalk.red(err.message)); process.exitCode = 1; }
@@ -273,7 +293,12 @@ users
   .command('add <id>')
   .description('Add a team member and print their token')
   .option('-n, --name <name>', 'Display name')
-  .action(runUsersCommand((id, options) => printToken(id, addUser(id, options.name))));
+  .option('-d, --doc [file]', 'Write a personal setup guide (.md) with the token instead of printing it')
+  .option('-s, --server-url <url>', PUBLIC_URL_HELP)
+  .action(runUsersCommand((id, options) => {
+    if (options.doc) publicUrl(options); // fail before creating the user
+    issue(id, addUser(id, options.name), options);
+  }));
 
 users
   .command('list')
@@ -287,7 +312,24 @@ users
 users
   .command('rotate <id>')
   .description('Issue a new token for a member (the old one stops working)')
-  .action(runUsersCommand((id) => printToken(id, rotateUser(id))));
+  .option('-d, --doc [file]', 'Write a personal setup guide (.md) with the new token')
+  .option('-s, --server-url <url>', PUBLIC_URL_HELP)
+  .action(runUsersCommand((id, options) => {
+    if (options.doc) publicUrl(options);
+    issue(id, rotateUser(id), options);
+  }));
+
+users
+  .command('doc <id>')
+  .description('Write the setup guide for an existing member whose token you still have')
+  .requiredOption('-t, --token <token>', 'Their current token (checked against the users file)')
+  .option('-o, --out <file>', 'Output file (default: ~/.vibe-annotations/onboarding/<id>.md)')
+  .option('-s, --server-url <url>', PUBLIC_URL_HELP)
+  .action(runUsersCommand((id, options) => {
+    const owner = userForToken(options.token);
+    if (!owner || owner.id !== id) throw new Error(`That token doesn't belong to "${id}".`);
+    issue(id, options.token, { ...options, doc: options.out || true });
+  }));
 
 users
   .command('remove <id>')
