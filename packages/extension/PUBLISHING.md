@@ -30,17 +30,22 @@ The extension ships as **Maitri Annotations**, a private team build of Vibe Anno
 
 ## After it's published
 
-Put the store item id (the 32-letter id in the listing URL) into the team CLI's environment
-so personal setup guides include the store link and a one-click setup link:
+Put the store item id (the 32-letter id in the listing URL) into the team CLI's environment:
 
 ```bash
 # ~/.local/bin/vibe-team
 export VIBE_EXTENSION_ID=<store item id>
 ```
 
-The setup link is `chrome-extension://<id>/options.html#url=<server>&token=<token>`. Teammates
-paste it into the address bar (Chrome blocks clicking `chrome-extension://` links from pages),
-check the URL, and click **Connect**. The same page is the extension's Options page.
+With it set, `vibe-team users add <id> --doc` writes a **token-free** guide and creates no user —
+teammates create their own account by signing in with Google (set that up first, below). The guide
+links the store listing and the setup link `chrome-extension://<id>/options.html#url=<server>`.
+Teammates paste the link into the address bar (Chrome blocks clicking `chrome-extension://` links
+from pages), click **Sign in with Google** with their work account, then create their Claude Code
+command on the same page. The same page is the extension's Options page.
+
+Legacy token users (`users rotate <id> --doc`, `users doc <id> --token …`) still get the old
+token guide.
 
 ## Google sign-in (one time)
 
@@ -49,11 +54,20 @@ check the URL, and click **Connect**. The same page is the extension's Options p
    scopes `openid`, `email`, `profile`.
 3. **Credentials → Create OAuth client ID → Chrome Extension** → item id = the store id.
 4. **Credentials → Create OAuth client ID → Web application** → Authorized redirect URI
-   `https://<store id>.chromiumapp.org/` (used by the pop-up in Edge/Brave).
+   `https://<store id>.chromiumapp.org/` (used by the account-picker pop-up: Edge/Brave, and Chrome when the profile isn't the work account).
 5. Server: add to `~/.vibe-annotations/server.env` and restart the service:
    `VIBE_GOOGLE_CLIENT_IDS=<chrome client id>,<web client id>` (optional `VIBE_GOOGLE_DOMAIN`).
 6. Extension: build with both ids and upload a new version:
    `VIBE_GOOGLE_CLIENT_ID=<chrome client id> VIBE_GOOGLE_WEB_CLIENT_ID=<web client id> npx wxt zip`
+7. Before uploading, grep the zip for both ids (a missing one means sign-in silently breaks):
+
+   ```bash
+   zip=.output/vibe-annotations-extension-<version>-chrome.zip
+   unzip -p "$zip" manifest.json | grep -o '<chrome client id>'
+   unzip -p "$zip" background.js | grep -o '<web client id>'
+   ```
+
+   Each command must print the id.
 
 Offboarding: `vibe-team remove <email>` removes the user and all their tokens immediately;
 otherwise their extension access lapses within 7 days.

@@ -151,7 +151,7 @@ ${USE_IT}
 
 | Setup page says | Fix |
 |---|---|
-| "Use your @maitriservices.com account" | You picked a personal Google account — sign in again with your work account. |
+| "Sign in with your @maitriservices.com account" | You picked a personal Google account — sign in again with your work account. |
 | "Your session expired — sign in again." | Click **Sign in again**. |
 | "Can't reach … is Tailscale/VPN connected" | Connect to Tailscale; check the URL. |
 | \`claude mcp list\` shows the server failing | The token was revoked or mistyped — create a new command on the setup page. |
