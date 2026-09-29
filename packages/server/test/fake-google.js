@@ -9,6 +9,7 @@ export async function startFakeGoogle({ clientId = 'test-client.apps.googleuserc
     lookalike: { email: 'eve@evil-maitriservices.com', hd: 'evil-maitriservices.com', name: 'Eve' },
     'suffix-trick': { email: 'eve@maitriservices.com.evil.io', hd: 'maitriservices.com.evil.io', name: 'Eve' },
     unverified: { email: 'jo@maitriservices.com', hd: 'maitriservices.com', name: 'Jo', email_verified: false },
+    'no-hd': { email: 'jo@maitriservices.com', name: 'Jo' },
     'other-app': { email: 'jane@maitriservices.com', hd: 'maitriservices.com', name: 'Jane Doe', aud: 'other-client' },
   };
   const server = http.createServer((req, res) => {

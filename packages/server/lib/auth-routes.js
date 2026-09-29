@@ -1,6 +1,6 @@
 // Google sign-in (public) and self-serve token management (authenticated).
 import { googleConfig, verifyGoogleAccessToken } from './google-auth.js';
-import { findOrCreateGoogleUser, issueToken, listTokens, revokeToken, isGoogleUser, currentUser } from './users.js';
+import { findOrCreateGoogleUser, issueToken, listTokens, revokeToken, isGoogleUser, currentUser, userForToken } from './users.js';
 
 const STATUS = { invalid_token: 401, wrong_client: 401, unverified_email: 401, wrong_domain: 403, google_unreachable: 502 };
 
@@ -24,7 +24,11 @@ export function registerPublicAuthRoutes(app) {
     try {
       const { email, name } = await verifyGoogleAccessToken(accessToken, cfg);
       const user = findOrCreateGoogleUser({ email, name });
-      const { token, expires_at } = issueToken(user.id, { kind: 'extension', label: 'Chrome extension' });
+      // previous_token = this browser's old server token: replace just that one so
+      // other browsers of the same person stay signed in. Only honoured for the same user.
+      const prev = typeof req.body?.previous_token === 'string' ? userForToken(req.body.previous_token) : null;
+      const replaceTokenId = prev && prev.id === user.id && prev.tokenId ? prev.tokenId : undefined;
+      const { token, expires_at } = issueToken(user.id, { kind: 'extension', label: 'Chrome extension', replaceTokenId });
       res.json({ token, expires_at, user });
     } catch (err) {
       const status = STATUS[err.code];
@@ -34,7 +38,15 @@ export function registerPublicAuthRoutes(app) {
   });
 }
 
-// Registered AFTER authenticate: req.auth.extra = { user, tokenId }.
+// Registered AFTER authenticate: req.auth.extra = { user, tokenId, kind }.
+// Creating/revoking tokens needs the extension's (Google sign-in) token — a
+// Claude Code token can list but not mint or revoke.
+const extensionOnly = (req, res) => {
+  if (req.auth?.extra?.kind === 'extension') return false;
+  res.status(403).json({ error: 'extension_only' });
+  return true;
+};
+
 export function registerMeRoutes(app) {
   app.get('/api/me/tokens', (req, res) => {
     const user = currentUser();
@@ -46,6 +58,7 @@ export function registerMeRoutes(app) {
   app.post('/api/me/tokens', (req, res) => {
     const user = currentUser();
     if (!user || !isGoogleUser(user.id)) return res.status(403).json({ error: 'google_only' });
+    if (extensionOnly(req, res)) return;
     const label = String(req.body?.label ?? '').trim();
     if (label.length < 1 || label.length > 40) return res.status(400).json({ error: 'invalid_label' });
     try {
@@ -60,6 +73,7 @@ export function registerMeRoutes(app) {
   app.delete('/api/me/tokens/:id', (req, res) => {
     const user = currentUser();
     if (!user || !isGoogleUser(user.id)) return res.status(403).json({ error: 'google_only' });
+    if (extensionOnly(req, res)) return;
     if (!revokeToken(user.id, req.params.id)) return res.status(404).json({ error: 'not_found' });
     res.status(204).end();
   });

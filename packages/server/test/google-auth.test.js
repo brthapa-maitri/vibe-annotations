@@ -24,6 +24,9 @@ test('rejects other domains', async () => {
   await assert.rejects(verifyGoogleAccessToken('lookalike', cfg), code('wrong_domain'));
   await assert.rejects(verifyGoogleAccessToken('suffix-trick', cfg), code('wrong_domain'));
 });
+test('rejects a company email without a Workspace hd claim', async () => {
+  await assert.rejects(verifyGoogleAccessToken('no-hd', cfg), code('wrong_domain'));
+});
 test('rejects unverified email', async () => {
   await assert.rejects(verifyGoogleAccessToken('unverified', cfg), code('unverified_email'));
 });

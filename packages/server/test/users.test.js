@@ -1,6 +1,6 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync } from 'fs';
+import { mkdtempSync, writeFileSync, readFileSync, statSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 
@@ -19,15 +19,58 @@ test('google user is created once, keyed by lower-cased email', () => {
   assert.equal(U.isGoogleUser(a.id), true);
 });
 
-test('extension token authenticates and a new sign-in replaces the old one', () => {
+test('extension token authenticates and carries its kind', () => {
   const u = U.findOrCreateGoogleUser({ email: 'jane@maitriservices.com', name: 'Jane' });
   const first = U.issueToken(u.id, { kind: 'extension', label: 'Chrome extension' });
   assert.match(first.token, /^vat_/);
   assert.ok(first.expires_at);
-  assert.deepEqual(U.userForToken(first.token), { id: u.id, name: 'Jane', tokenId: first.id, auth: 'google' });
-  const second = U.issueToken(u.id, { kind: 'extension', label: 'Chrome extension' });
-  assert.equal(U.userForToken(first.token), null);
-  assert.equal(U.userForToken(second.token).tokenId, second.id);
+  assert.deepEqual(U.userForToken(first.token), { id: u.id, name: 'Jane', tokenId: first.id, auth: 'google', kind: 'extension' });
+  const mcp = U.issueToken(u.id, { kind: 'mcp', label: 'laptop' });
+  assert.equal(U.userForToken(mcp.token).kind, 'mcp');
+});
+
+test('re-sign-in replaces only the given token; another browser stays signed in', () => {
+  const u = U.findOrCreateGoogleUser({ email: 'jane@maitriservices.com', name: 'Jane' });
+  const browserA = U.issueToken(u.id, { kind: 'extension', label: 'Chrome extension' });
+  const browserB = U.issueToken(u.id, { kind: 'extension', label: 'Chrome extension' });
+  assert.ok(U.userForToken(browserA.token), 'second browser must not sign out the first');
+  const browserA2 = U.issueToken(u.id, { kind: 'extension', label: 'Chrome extension', replaceTokenId: browserA.id });
+  assert.equal(U.userForToken(browserA.token), null);
+  assert.equal(U.userForToken(browserA2.token).tokenId, browserA2.id);
+  assert.equal(U.userForToken(browserB.token).tokenId, browserB.id);
+});
+
+test('replaceTokenId never removes an mcp token', () => {
+  const u = U.findOrCreateGoogleUser({ email: 'jane@maitriservices.com', name: 'Jane' });
+  const mcp = U.issueToken(u.id, { kind: 'mcp', label: 'laptop' });
+  U.issueToken(u.id, { kind: 'extension', label: 'Chrome extension', replaceTokenId: mcp.id });
+  assert.ok(U.userForToken(mcp.token));
+});
+
+test('replaceTokenId cannot revoke another user\'s token', () => {
+  const jane = U.findOrCreateGoogleUser({ email: 'jane@maitriservices.com', name: 'Jane' });
+  const bob = U.findOrCreateGoogleUser({ email: 'bob@maitriservices.com', name: 'Bob' });
+  const bobs = U.issueToken(bob.id, { kind: 'extension', label: 'Chrome extension' });
+  U.issueToken(jane.id, { kind: 'extension', label: 'Chrome extension', replaceTokenId: bobs.id });
+  assert.ok(U.userForToken(bobs.token));
+});
+
+test('at most 5 extension tokens per user; the oldest is dropped', () => {
+  const u = U.findOrCreateGoogleUser({ email: 'jane@maitriservices.com', name: 'Jane' });
+  const mcp = U.issueToken(u.id, { kind: 'mcp', label: 'laptop' });
+  const ext = [];
+  for (let i = 0; i < 6; i++) ext.push(U.issueToken(u.id, { kind: 'extension', label: 'Chrome extension' }));
+  assert.equal(U.userForToken(ext[0].token), null);
+  for (const t of ext.slice(1)) assert.ok(U.userForToken(t.token));
+  assert.equal(U.listTokens(u.id).filter(t => t.kind === 'extension').length, 5);
+  assert.ok(U.userForToken(mcp.token));
+});
+
+test('users.json is written atomically with mode 0600', () => {
+  U.findOrCreateGoogleUser({ email: 'jane@maitriservices.com', name: 'Jane' });
+  assert.equal(statSync(process.env.VIBE_USERS_FILE).mode & 0o777, 0o600);
+  assert.equal(existsSync(process.env.VIBE_USERS_FILE + '.tmp'), false);
+  assert.equal(U.loadUsers().length, 1);
 });
 
 test('expired tokens are rejected and not listed', () => {
@@ -64,7 +107,7 @@ test('revokeToken cannot touch another user\'s token', () => {
 test('legacy users keep working and are untouched', () => {
   const token = U.addUser('bhesh', 'Bhesh');
   U.findOrCreateGoogleUser({ email: 'bhesh@maitriservices.com', name: 'Bhesh' });
-  assert.deepEqual(U.userForToken(token), { id: 'bhesh', name: 'Bhesh', tokenId: null, auth: 'legacy' });
+  assert.deepEqual(U.userForToken(token), { id: 'bhesh', name: 'Bhesh', tokenId: null, auth: 'legacy', kind: 'legacy' });
   assert.equal(U.isGoogleUser('bhesh'), false);
   const raw = JSON.parse(readFileSync(process.env.VIBE_USERS_FILE, 'utf8'));
   assert.equal(raw.users.length, 2);

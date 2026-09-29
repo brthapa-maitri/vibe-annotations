@@ -3,7 +3,7 @@
 // its human. Users live in a JSON file (only token hashes are stored); the file
 // is re-read when it changes, so adding/removing people needs no restart.
 
-import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, renameSync } from 'fs';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { AsyncLocalStorage } from 'async_hooks';
 import path from 'path';
@@ -43,7 +43,10 @@ export function loadUsers() {
 
 function writeUsers(users) {
   mkdirSync(path.dirname(USERS_FILE), { recursive: true });
-  writeFileSync(USERS_FILE, JSON.stringify({ users }, null, 2) + '\n', { mode: 0o600 });
+  // Write-then-rename so a crash never leaves a half-written users.json.
+  const tmp = `${USERS_FILE}.tmp`;
+  writeFileSync(tmp, JSON.stringify({ users }, null, 2) + '\n', { mode: 0o600 });
+  renameSync(tmp, USERS_FILE);
   cache = { mtimeMs: statSync(USERS_FILE).mtimeMs, users };
 }
 
@@ -53,17 +56,17 @@ export function teamModeEnabled() {
 
 const live = (t, now) => !t.expires_at || Date.parse(t.expires_at) > now;
 
-// Token → { id, name, tokenId, auth } or null. Legacy users have one token_sha256;
+// Token → { id, name, tokenId, auth, kind } or null (kind: 'extension' | 'mcp' | 'legacy'). Legacy users have one token_sha256;
 // Google users have a tokens[] list whose entries may expire.
 export function userForToken(token, now = Date.now()) {
   if (!token) return null;
   const h = sha256(token);
   for (const u of loadUsers()) {
     if (u.token_sha256 && hashesMatch(u.token_sha256, h)) {
-      return { id: u.id, name: u.name || u.id, tokenId: null, auth: 'legacy' };
+      return { id: u.id, name: u.name || u.id, tokenId: null, auth: 'legacy', kind: 'legacy' };
     }
     const t = (u.tokens || []).find(t => live(t, now) && hashesMatch(t.sha256, h));
-    if (t) return { id: u.id, name: u.name || u.id, tokenId: t.id, auth: u.auth || 'legacy' };
+    if (t) return { id: u.id, name: u.name || u.id, tokenId: t.id, auth: u.auth || 'legacy', kind: t.kind || 'legacy' };
   }
   return null;
 }
@@ -102,6 +105,7 @@ export function removeUser(id) {
 
 export const EXTENSION_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAX_MCP_TOKENS = 20;
+export const MAX_EXTENSION_TOKENS = 5; // one per browser
 
 export function isGoogleUser(id) {
   return loadUsers().some(u => u.id === id && u.auth === 'google');
@@ -118,13 +122,18 @@ export function findOrCreateGoogleUser({ email, name }) {
   return { id, name: user.name };
 }
 
-export function issueToken(userId, { kind, label }) {
+// Extension tokens: one per browser. A re-sign-in passes replaceTokenId (that
+// browser's previous token) so only it is replaced; beyond MAX_EXTENSION_TOKENS
+// the oldest are dropped.
+export function issueToken(userId, { kind, label, replaceTokenId }) {
   const users = loadUsers();
   const u = users.find(x => x.id === userId && x.auth === 'google');
   if (!u) throw new Error(`No Google user "${userId}".`);
   const now = Date.now();
   let tokens = (u.tokens || []).filter(t => live(t, now));
-  if (kind === 'extension') tokens = tokens.filter(t => t.kind !== 'extension');
+  if (kind === 'extension' && replaceTokenId) {
+    tokens = tokens.filter(t => !(t.kind === 'extension' && t.id === replaceTokenId));
+  }
   if (kind === 'mcp' && tokens.filter(t => t.kind === 'mcp').length >= MAX_MCP_TOKENS) {
     throw Object.assign(new Error(`At most ${MAX_MCP_TOKENS} Claude Code tokens — revoke one first.`), { code: 'too_many_tokens' });
   }
@@ -135,7 +144,15 @@ export function issueToken(userId, { kind, label }) {
     created_at: new Date(now).toISOString(),
     expires_at: kind === 'extension' ? new Date(now + EXTENSION_TOKEN_TTL_MS).toISOString() : null,
   };
-  writeUsers(users.map(x => x === u ? { ...u, tokens: [...tokens, entry] } : x));
+  tokens = [...tokens, entry];
+  if (kind === 'extension') {
+    const excess = tokens.filter(t => t.kind === 'extension').length - MAX_EXTENSION_TOKENS;
+    if (excess > 0) {
+      const drop = new Set(tokens.filter(t => t.kind === 'extension').slice(0, excess)); // oldest first
+      tokens = tokens.filter(t => !drop.has(t));
+    }
+  }
+  writeUsers(users.map(x => x === u ? { ...u, tokens } : x));
   return { id: entry.id, token, expires_at: entry.expires_at };
 }
 

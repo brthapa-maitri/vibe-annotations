@@ -89,6 +89,31 @@ test('legacy token users get google_only on token management', async () => {
   assert.equal((await post('/api/me/tokens', { label: 'laptop' }, 'vat_legacy')).status, 403);
 });
 
+// Sign-ins so far: 6. Budget is 10 per minute per IP before the rate-limit test.
+let browserB; // shared with the kind test below to save sign-ins
+test('two browsers stay signed in; re-sign-in with previous_token replaces only that browser', async () => {
+  const a = await (await post('/api/auth/google', { access_token: 'good' })).json();
+  browserB = await (await post('/api/auth/google', { access_token: 'good' })).json();
+  assert.equal((await get('/api/whoami', a.token)).status, 200);
+  assert.equal((await get('/api/whoami', browserB.token)).status, 200);
+  const a2 = await (await post('/api/auth/google', { access_token: 'good', previous_token: a.token })).json();
+  assert.equal((await get('/api/whoami', a.token)).status, 401);
+  assert.equal((await get('/api/whoami', a2.token)).status, 200);
+  assert.equal((await get('/api/whoami', browserB.token)).status, 200);
+});
+
+test('Claude Code (mcp) tokens can list but not create or revoke tokens', async () => {
+  const mcp = await (await post('/api/me/tokens', { label: 'laptop' }, browserB.token)).json();
+  assert.equal((await get('/api/me/tokens', mcp.token)).status, 200);
+  const create = await post('/api/me/tokens', { label: 'sneaky' }, mcp.token);
+  assert.equal(create.status, 403);
+  assert.deepEqual(await create.json(), { error: 'extension_only' });
+  const del = await fetch(`${base}/api/me/tokens/${mcp.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${mcp.token}` } });
+  assert.equal(del.status, 403);
+  assert.deepEqual(await del.json(), { error: 'extension_only' });
+  assert.equal((await get('/api/whoami', mcp.token)).status, 200);
+});
+
 // Must stay last: it exhausts the per-IP sign-in budget.
 test('rate limit on sign-in', async () => {
   let last;

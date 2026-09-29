@@ -42,8 +42,10 @@ Google users:
 ```
 
 - User id = the lower-cased email. The `USER_ID` rule is widened to allow one `@` for Google users only.
-- `kind: "extension"` tokens expire after 7 days. On each new sign-in, older extension tokens are
-  removed, so there is at most one live extension token per user. `kind: "mcp"` tokens never expire.
+- `kind: "extension"` tokens expire after 7 days. There is one per browser: a re-sign-in sends the
+  browser's current server token as `previous_token`, and only that token (if it belongs to the same
+  user) is replaced, so a second browser of the same person stays signed in. At most 5 live extension
+  tokens per user; beyond that the oldest is dropped. `kind: "mcp"` tokens never expire.
 - At most 20 MCP tokens per user (the create call returns 409 beyond that).
 
 ### Token lookup (`lib/users.js`)
@@ -76,10 +78,10 @@ which token made the call.
 
 | Method + path | Auth | Behaviour |
 |---|---|---|
-| `POST /api/auth/google` `{access_token}` | none (public, like `/health`) | Verify → find-or-create user → issue extension token → `200 {token, expires_at, user:{id,name}}`. Errors: `400` missing token, `401 {error: invalid_token|wrong_client|unverified_email}`, `403 {error: wrong_domain}`, `502 google_unreachable`, `404` when sign-in is off. |
+| `POST /api/auth/google` `{access_token, previous_token?}` | none (public, like `/health`) | Verify → find-or-create user → issue extension token (replacing `previous_token` if it is the same user's) → `200 {token, expires_at, user:{id,name}}`. Errors: `400` missing token, `401 {error: invalid_token|wrong_client|unverified_email}`, `403 {error: wrong_domain}`, `502 google_unreachable`, `404` when sign-in is off. |
 | `GET /api/me/tokens` | bearer | `{tokens:[{id,label,kind,created_at,expires_at,current}]}` — no hashes. Legacy users get `[]`. |
-| `POST /api/me/tokens` `{label}` | bearer, Google user | Create an MCP token; label 1–40 chars, trimmed. `201 {id, label, token}` (the token is shown once). |
-| `DELETE /api/me/tokens/:id` | bearer, Google user | Revoke one of your own tokens, including the calling one (used by Sign out) → `204`; unknown or someone else's id → `404`. |
+| `POST /api/me/tokens` `{label}` | bearer, Google user, extension token (else `403 extension_only`) | Create an MCP token; label 1–40 chars, trimmed. `201 {id, label, token}` (the token is shown once). |
+| `DELETE /api/me/tokens/:id` | bearer, Google user, extension token (else `403 extension_only`) | Revoke one of your own tokens, including the calling one (used by Sign out) → `204`; unknown or someone else's id → `404`. |
 
 `POST /api/auth/google` is rate-limited in memory to 10 requests per minute per IP. Because
 `authenticate` currently applies to all of `/api`, this route is registered before that middleware

@@ -74,7 +74,7 @@ function authenticate(req, res, next) {
     if (!found) return res.status(401).json({ error: 'unauthorized', error_description: 'Missing or invalid user token.' });
     const user = { id: found.id, name: found.name };
     // req.auth reaches MCP tool handlers as extra.authInfo.
-    req.auth = { token, clientId: user.id, scopes: [], extra: { user, tokenId: found.tokenId } };
+    req.auth = { token, clientId: user.id, scopes: [], extra: { user, tokenId: found.tokenId, kind: found.kind } };
     return requestContext.run({ user, scope: 'own' }, next);
   }
   if (TOKEN && !tokenMatches(presentedToken(req))) {

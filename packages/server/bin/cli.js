@@ -297,6 +297,17 @@ users
   .option('-s, --server-url <url>', PUBLIC_URL_HELP)
   .action(runUsersCommand((id, options) => {
     if (options.doc) publicUrl(options); // fail before creating the user
+    // Store build + Google sign-in: teammates create their own user by signing
+    // in, so the guide carries no token and no user is created here.
+    if (options.doc && process.env.VIBE_EXTENSION_ID) {
+      const file = writeOnboardingDoc(
+        { id, name: options.name || id, serverUrl: publicUrl(options), extensionId: process.env.VIBE_EXTENSION_ID },
+        typeof options.doc === 'string' ? options.doc : undefined
+      );
+      console.log(chalk.green(`Setup guide for ${id} written to ${file}`));
+      console.log(chalk.gray('No user was created — teammates self-provision by signing in with Google. The guide has no token; send it any way you like.'));
+      return;
+    }
     issue(id, addUser(id, options.name), options);
   }));
 
