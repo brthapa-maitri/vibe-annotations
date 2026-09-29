@@ -7,6 +7,7 @@ import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync } from 'fs
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { AsyncLocalStorage } from 'async_hooks';
 import path from 'path';
+import { googleConfig } from './google-auth.js';
 
 export const USERS_FILE = process.env.VIBE_USERS_FILE
   || path.join(process.env.HOME || process.env.USERPROFILE, '.vibe-annotations', 'users.json');
@@ -43,18 +44,28 @@ export function loadUsers() {
 function writeUsers(users) {
   mkdirSync(path.dirname(USERS_FILE), { recursive: true });
   writeFileSync(USERS_FILE, JSON.stringify({ users }, null, 2) + '\n', { mode: 0o600 });
+  cache = { mtimeMs: statSync(USERS_FILE).mtimeMs, users };
 }
 
 export function teamModeEnabled() {
-  return loadUsers().length > 0;
+  return loadUsers().length > 0 || googleConfig().enabled;
 }
 
-// Token → { id, name } or null.
-export function userForToken(token) {
+const live = (t, now) => !t.expires_at || Date.parse(t.expires_at) > now;
+
+// Token → { id, name, tokenId, auth } or null. Legacy users have one token_sha256;
+// Google users have a tokens[] list whose entries may expire.
+export function userForToken(token, now = Date.now()) {
   if (!token) return null;
   const h = sha256(token);
-  const u = loadUsers().find(u => u.token_sha256 && hashesMatch(u.token_sha256, h));
-  return u ? { id: u.id, name: u.name || u.id } : null;
+  for (const u of loadUsers()) {
+    if (u.token_sha256 && hashesMatch(u.token_sha256, h)) {
+      return { id: u.id, name: u.name || u.id, tokenId: null, auth: 'legacy' };
+    }
+    const t = (u.tokens || []).find(t => live(t, now) && hashesMatch(t.sha256, h));
+    if (t) return { id: u.id, name: u.name || u.id, tokenId: t.id, auth: u.auth || 'legacy' };
+  }
+  return null;
 }
 
 // --- Management (used by the CLI) ---
@@ -85,6 +96,61 @@ export function removeUser(id) {
   const users = loadUsers();
   if (!users.some(u => u.id === id)) throw new Error(`No user "${id}".`);
   writeUsers(users.filter(u => u.id !== id));
+}
+
+// --- Google users (self-serve) ---
+
+export const EXTENSION_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const MAX_MCP_TOKENS = 20;
+
+export function isGoogleUser(id) {
+  return loadUsers().some(u => u.id === id && u.auth === 'google');
+}
+
+export function findOrCreateGoogleUser({ email, name }) {
+  const id = String(email || '').trim().toLowerCase();
+  if (!id.includes('@')) throw new Error('Google user needs an email.');
+  const users = loadUsers();
+  const existing = users.find(u => u.id === id && u.auth === 'google');
+  if (existing) return { id, name: existing.name || id };
+  const user = { id, name: name || id, email: id, auth: 'google', created_at: new Date().toISOString(), tokens: [] };
+  writeUsers([...users, user]);
+  return { id, name: user.name };
+}
+
+export function issueToken(userId, { kind, label }) {
+  const users = loadUsers();
+  const u = users.find(x => x.id === userId && x.auth === 'google');
+  if (!u) throw new Error(`No Google user "${userId}".`);
+  const now = Date.now();
+  let tokens = (u.tokens || []).filter(t => live(t, now));
+  if (kind === 'extension') tokens = tokens.filter(t => t.kind !== 'extension');
+  if (kind === 'mcp' && tokens.filter(t => t.kind === 'mcp').length >= MAX_MCP_TOKENS) {
+    throw Object.assign(new Error(`At most ${MAX_MCP_TOKENS} Claude Code tokens — revoke one first.`), { code: 'too_many_tokens' });
+  }
+  const token = newToken();
+  const entry = {
+    id: 't_' + randomBytes(6).toString('hex'),
+    label, kind, sha256: sha256(token),
+    created_at: new Date(now).toISOString(),
+    expires_at: kind === 'extension' ? new Date(now + EXTENSION_TOKEN_TTL_MS).toISOString() : null,
+  };
+  writeUsers(users.map(x => x === u ? { ...u, tokens: [...tokens, entry] } : x));
+  return { id: entry.id, token, expires_at: entry.expires_at };
+}
+
+export function listTokens(userId, now = Date.now()) {
+  const u = loadUsers().find(x => x.id === userId);
+  return (u?.tokens || []).filter(t => live(t, now))
+    .map(({ id, label, kind, created_at, expires_at }) => ({ id, label, kind, created_at, expires_at }));
+}
+
+export function revokeToken(userId, tokenId) {
+  const users = loadUsers();
+  const u = users.find(x => x.id === userId);
+  if (!u || !(u.tokens || []).some(t => t.id === tokenId)) return false;
+  writeUsers(users.map(x => x === u ? { ...u, tokens: u.tokens.filter(t => t.id !== tokenId) } : x));
+  return true;
 }
 
 // --- Per-request identity ---
