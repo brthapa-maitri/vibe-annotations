@@ -43,11 +43,17 @@ export async function getServerConfig() {
 
 export async function saveServerConfig({ url, token }) {
   const normalized = normalizeServerUrl(url);
-  await chrome.storage.local.set({
+  const newToken = String(token || '').trim();
+  const { vibeServerToken: stored } = await chrome.storage.local.get('vibeServerToken');
+  const update = {
     vibeServerUrl: normalized && normalized !== DEFAULT_SERVER_URL ? normalized : '',
-    vibeServerToken: String(token || '').trim(),
-    vibeAuthMode: '', vibeTokenExpiresAt: null, vibeUser: null,
-  });
+    vibeServerToken: newToken,
+  };
+  // A URL-only save keeps the token, so it must not demote a Google session.
+  if (newToken !== String(stored || '').trim()) {
+    Object.assign(update, { vibeAuthMode: '', vibeTokenExpiresAt: null, vibeUser: null });
+  }
+  await chrome.storage.local.set(update);
 }
 
 export function onServerConfigChanged(cb) {

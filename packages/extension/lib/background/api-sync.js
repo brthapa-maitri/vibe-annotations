@@ -1,7 +1,8 @@
 // API sync — health checks, bidirectional merge, individual CRUD sync
 import { isSupportedUrl } from './url-filter.js';
 import { updateAllBadges } from './badge.js';
-import { getServerConfig, authHeaders, describeConnectionProblem } from '../server-config.js';
+import { getServerConfig, getAuthState, authHeaders, describeConnectionProblem } from '../server-config.js';
+import { ensureFreshToken, recoverFromAuthError } from './google-auth.js';
 
 let connected = false;
 
@@ -14,6 +15,16 @@ export async function apiFetch(path, init = {}) {
 export function isConnected() { return connected; }
 
 export async function checkConnection() {
+  await ensureFreshToken().catch(() => {});
+  let status = await checkOnce();
+  if (status.auth_error && await recoverFromAuthError().catch(() => false)) status = await checkOnce();
+  if (status.auth_error && (await getAuthState()).mode === 'google') {
+    status.problem = "Signed out — open the extension's setup page and sign in with Google.";
+  }
+  return status;
+}
+
+async function checkOnce() {
   const { url: API_URL } = await getServerConfig();
   try {
     const response = await apiFetch('/health', { method: 'GET', signal: AbortSignal.timeout(5000) });

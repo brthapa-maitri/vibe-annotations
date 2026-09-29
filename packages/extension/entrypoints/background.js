@@ -4,7 +4,8 @@
 import { isSupportedUrl, isLocalhostUrl } from '../lib/background/url-filter.js';
 import { updateBadge, clearBadge, updateBadgeForUrl, updateAllBadges } from '../lib/background/badge.js';
 import { isConnected, checkConnection, syncAll, saveOne, deleteOne, smartSync, fetchAnnotations, uploadAttachment, deleteAttachment, apiFetch } from '../lib/background/api-sync.js';
-import { onServerConfigChanged } from '../lib/server-config.js';
+import { onServerConfigChanged, getAuthState, googleSignInAvailable } from '../lib/server-config.js';
+import { signInWithGoogle, signOut, myTokens, ensureFreshToken } from '../lib/background/google-auth.js';
 import { formatExport } from '../lib/background/export.js';
 import { migrateSyncFlags } from '../lib/background/utils.js';
 
@@ -56,6 +57,12 @@ class VibeAnnotationsBackground {
     this.restoreEnabledSites();
     migrateSyncFlags();
     this.startConnectionMonitoring();
+    this.setupTokenRefresh();
+  }
+
+  setupTokenRefresh() {
+    chrome.alarms.create('vibe-token-refresh', { periodInMinutes: 360 });
+    chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'vibe-token-refresh') ensureFreshToken().catch(() => {}); });
   }
 
   // --- Lifecycle ---
@@ -214,6 +221,28 @@ class VibeAnnotationsBackground {
             .then(() => sendResponse({ success: true }))
             .catch(error => sendResponse({ success: false, error: error.message }));
           return true;
+        case 'getAuthState':
+          getAuthState()
+            .then(state => sendResponse({ success: true, ...state, googleAvailable: googleSignInAvailable() }))
+            .catch(error => sendResponse({ success: false, error: error.message }));
+          break;
+        case 'googleSignIn':
+          signInWithGoogle({ interactive: !!request.interactive })
+            .then(r => sendResponse({ success: true, ...r }))
+            .catch(error => sendResponse({ success: false, error: error.message }));
+          break;
+        case 'googleSignOut':
+          signOut().then(() => sendResponse({ success: true })).catch(error => sendResponse({ success: false, error: error.message }));
+          break;
+        case 'listMyTokens':
+          myTokens.list().then(r => sendResponse({ success: true, ...r }));
+          break;
+        case 'createMyToken':
+          myTokens.create(request.label).then(r => sendResponse({ success: true, ...r }));
+          break;
+        case 'revokeMyToken':
+          myTokens.revoke(request.id).then(r => sendResponse({ success: true, ...r }));
+          break;
         default:
           sendResponse({ success: false, error: 'Unknown action' });
       }
