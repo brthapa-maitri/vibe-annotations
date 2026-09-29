@@ -5,6 +5,7 @@
 
 export const DEFAULT_SERVER_URL = 'http://127.0.0.1:3846';
 const KEYS = ['vibeServerUrl', 'vibeServerToken'];
+const AUTH_KEYS = ['vibeAuthMode', 'vibeTokenExpiresAt', 'vibeUser'];
 
 // Trim, drop trailing slashes, require http(s). Returns '' for invalid input.
 export function normalizeServerUrl(raw) {
@@ -45,6 +46,7 @@ export async function saveServerConfig({ url, token }) {
   await chrome.storage.local.set({
     vibeServerUrl: normalized && normalized !== DEFAULT_SERVER_URL ? normalized : '',
     vibeServerToken: String(token || '').trim(),
+    vibeAuthMode: '', vibeTokenExpiresAt: null, vibeUser: null,
   });
 }
 
@@ -77,4 +79,22 @@ export function authHeaders(token) {
 export function withTokenParam(url, token) {
   if (!token) return url;
   return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token);
+}
+
+export function googleSignInAvailable() {
+  return !!chrome.runtime.getManifest().oauth2?.client_id;
+}
+
+export async function getAuthState() {
+  const r = await chrome.storage.local.get([...KEYS, ...AUTH_KEYS]);
+  const mode = r.vibeAuthMode === 'google' && r.vibeServerToken ? 'google' : (r.vibeServerToken ? 'token' : 'none');
+  return { mode, user: mode === 'google' ? r.vibeUser || null : null, expiresAt: mode === 'google' ? r.vibeTokenExpiresAt || null : null };
+}
+
+export async function saveGoogleSession({ token, expiresAt, user }) {
+  await chrome.storage.local.set({ vibeServerToken: token, vibeAuthMode: 'google', vibeTokenExpiresAt: expiresAt, vibeUser: user });
+}
+
+export async function clearGoogleSession() {
+  await chrome.storage.local.set({ vibeServerToken: '', vibeAuthMode: '', vibeTokenExpiresAt: null, vibeUser: null });
 }
