@@ -16,6 +16,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID, timingSafeEqual } from 'crypto';
 import chalk from 'chalk';
+import { registerPublicAuthRoutes, registerMeRoutes } from './auth-routes.js';
+import { googleConfig } from './google-auth.js';
 import { teamModeEnabled, userForToken, requestContext, currentUser, currentScope, ownerId, USERS_FILE } from './users.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -68,10 +70,11 @@ function authenticate(req, res, next) {
   if (req.method === 'OPTIONS') return next(); // CORS preflight carries no credentials
   if (teamModeEnabled()) {
     const token = presentedToken(req);
-    const user = userForToken(token);
-    if (!user) return res.status(401).json({ error: 'unauthorized', error_description: 'Missing or invalid user token.' });
+    const found = userForToken(token);
+    if (!found) return res.status(401).json({ error: 'unauthorized', error_description: 'Missing or invalid user token.' });
+    const user = { id: found.id, name: found.name };
     // req.auth reaches MCP tool handlers as extra.authInfo.
-    req.auth = { token, clientId: user.id, scopes: [], extra: { user } };
+    req.auth = { token, clientId: user.id, scopes: [], extra: { user, tokenId: found.tokenId } };
     return requestContext.run({ user, scope: 'own' }, next);
   }
   if (TOKEN && !tokenMatches(presentedToken(req))) {
@@ -188,17 +191,20 @@ class LocalAnnotationsServer {
         status: 'ok', 
         version: packageJson.version,
         minExtensionVersion: '1.0.0', // Minimum compatible extension version
+        google_sign_in: googleConfig().enabled,
         auth: teamModeEnabled() ? 'users' : (TOKEN ? 'token' : 'none'),
         timestamp: new Date().toISOString() 
       });
     });
 
+    registerPublicAuthRoutes(this.app);
     this.app.use(['/api', '/mcp', '/sse', '/messages'], authenticate);
 
     // Who the presented token belongs to (extension shows "Connected as …").
     this.app.get('/api/whoami', (req, res) => {
       res.json({ team_mode: teamModeEnabled(), user: currentUser() });
     });
+    registerMeRoutes(this.app);
 
     // API endpoints for Chrome extension
     this.app.get('/api/annotations', async (req, res) => {
@@ -2203,6 +2209,7 @@ figcaption{padding:4px 8px;font-size:11px;color:#6b7280;background:#fafafa}
       if (EXTRA_ORIGINS.size) console.log(`Extra CORS origins: ${[...EXTRA_ORIGINS].join(', ')}`);
       if (teamModeEnabled()) console.log(`Team mode: per-user tokens from ${USERS_FILE}`);
       else if (TOKEN) console.log('Token auth: enabled');
+      if (googleConfig().enabled) console.log(`Google sign-in: ${googleConfig().domain}`);
       console.log('\nServer ready to handle requests');
     });
     

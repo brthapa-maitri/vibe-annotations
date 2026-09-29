@@ -306,7 +306,10 @@ users
   .action(runUsersCommand(() => {
     const all = loadUsers();
     if (!all.length) { console.log(chalk.gray(`No users — server runs in single-user mode. (${USERS_FILE})`)); return; }
-    for (const u of all) console.log(`${u.id.padEnd(20)} ${u.name || ''}`);
+    for (const u of all) {
+      const how = u.auth === 'google' ? chalk.gray(`google · ${(u.tokens || []).length} token(s)`) : chalk.gray('token');
+      console.log(`${u.id.padEnd(34)} ${(u.name || '').padEnd(24)} ${how}`);
+    }
   }));
 
 users
