@@ -4,6 +4,8 @@ import { getServerConfig, getAuthState, saveGoogleSession, clearGoogleSession, a
 
 export const SIGN_IN_MESSAGES = {
   wrong_domain: 'Sign in with your @maitriservices.com account.',
+  wrong_domain_chrome_profile: 'Sign in with your @maitriservices.com account.'
+    + ' Chrome is signed in with another account — add your work account to Chrome, or use the Advanced token option.',
   unverified_email: "Google sign-in isn't set up correctly for this server — tell the admin.",
   wrong_client: "Google sign-in isn't set up correctly for this server — tell the admin.",
   invalid_token: "Google sign-in isn't set up correctly for this server — tell the admin.",
@@ -17,10 +19,16 @@ export const SIGN_IN_MESSAGES = {
 
 const WEB_CLIENT_ID = import.meta.env.WXT_GOOGLE_WEB_CLIENT_ID || '';
 let webToken = null; // { token, expiresAt } for the pop-up flow
+// Last token Chrome's getAuthToken handed us, so sign-out / account switching can
+// evict it from Chrome's cache (module state: lost if the worker restarts, which
+// only means Chrome keeps a cached token for the same profile account).
+let lastChromeToken = null;
 
 async function tokenViaChrome(interactive) {
   const r = await chrome.identity.getAuthToken({ interactive });
-  return typeof r === 'string' ? r : r?.token;
+  const token = typeof r === 'string' ? r : r?.token;
+  lastChromeToken = token || null;
+  return token;
 }
 
 async function tokenViaWebFlow(interactive) {
@@ -52,6 +60,8 @@ export async function getGoogleAccessToken({ interactive }) {
 
 async function dropCachedGoogleToken(token) {
   webToken = null;
+  if (token && token === lastChromeToken) lastChromeToken = null;
+  if (!token) return;
   try { await chrome.identity.removeCachedAuthToken({ token }); } catch { /* web flow / unsupported */ }
 }
 
@@ -82,6 +92,14 @@ export async function signInWithGoogle({ interactive }) {
     try { access = await getGoogleAccessToken({ interactive }); } catch (e) { return fail(e.code || 'cancelled'); }
     r = await exchange(access);
   }
+  if (!r.ok && r.error === 'wrong_domain' && access === lastChromeToken) {
+    // Chrome's token belongs to the browser profile's account, which isn't the work
+    // account. Forget it, and let the user pick another account in the pop-up flow.
+    await dropCachedGoogleToken(access);
+    if (!interactive || !WEB_CLIENT_ID) return { ok: false, error: 'wrong_domain', message: SIGN_IN_MESSAGES.wrong_domain_chrome_profile };
+    try { access = await tokenViaWebFlow(true); } catch (e) { return fail(e.code || 'cancelled'); }
+    r = await exchange(access);
+  }
   if (!r.ok) return fail(r.error);
   await saveGoogleSession({ token: r.token, expiresAt: Date.parse(r.expires_at), user: r.user });
   return { ok: true, user: r.user };
@@ -110,6 +128,9 @@ export async function signOut() {
   const current = list.ok && list.tokens?.find(t => t.current);
   if (current) await myTokens.revoke(current.id);
   await clearGoogleSession();
+  // Forget Google's token too, so the next sign-in asks Google again (and can
+  // pick up a different account) instead of silently reusing this one.
+  await dropCachedGoogleToken(lastChromeToken);
 }
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -124,10 +145,20 @@ export async function ensureFreshToken() {
   await signInWithGoogle({ interactive: false });
 }
 
+// Several connection checks can hit the same 401 at once (config-change listener,
+// periodic sync, the setup page). They share one silent re-sign-in; a check that
+// arrives just after a successful one is told to retry with the new token.
 let lastRecovery = 0;
+let lastRecoveryOk = false;
+let recovering = null;
 export async function recoverFromAuthError() {
+  if (recovering) return recovering;
   const s = await getAuthState();
-  if (s.mode !== 'google' || Date.now() - lastRecovery < 60_000) return false;
+  if (s.mode !== 'google') return false;
+  if (Date.now() - lastRecovery < 60_000) return lastRecoveryOk;
   lastRecovery = Date.now();
-  return (await signInWithGoogle({ interactive: false })).ok;
+  recovering = signInWithGoogle({ interactive: false })
+    .then(r => (lastRecoveryOk = r.ok))
+    .finally(() => { recovering = null; });
+  return recovering;
 }

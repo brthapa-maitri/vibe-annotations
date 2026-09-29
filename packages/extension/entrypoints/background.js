@@ -235,13 +235,16 @@ class VibeAnnotationsBackground {
           signOut().then(() => sendResponse({ success: true })).catch(error => sendResponse({ success: false, error: error.message }));
           break;
         case 'listMyTokens':
-          myTokens.list().then(r => sendResponse({ success: true, ...r }));
+          myTokens.list().then(r => sendResponse({ success: true, ...r }))
+            .catch(error => sendResponse({ success: false, error: error.message }));
           break;
         case 'createMyToken':
-          myTokens.create(request.label).then(r => sendResponse({ success: true, ...r }));
+          myTokens.create(request.label).then(r => sendResponse({ success: true, ...r }))
+            .catch(error => sendResponse({ success: false, error: error.message }));
           break;
         case 'revokeMyToken':
-          myTokens.revoke(request.id).then(r => sendResponse({ success: true, ...r }));
+          myTokens.revoke(request.id).then(r => sendResponse({ success: true, ...r }))
+            .catch(error => sendResponse({ success: false, error: error.message }));
           break;
         default:
           sendResponse({ success: false, error: 'Unknown action' });
