@@ -151,14 +151,16 @@ export async function ensureFreshToken() {
 let lastRecovery = 0;
 let lastRecoveryOk = false;
 let recovering = null;
-export async function recoverFromAuthError() {
+export function recoverFromAuthError() {
+  // Assigned synchronously, before any await, so concurrent callers always share it.
   if (recovering) return recovering;
-  const s = await getAuthState();
-  if (s.mode !== 'google') return false;
-  if (Date.now() - lastRecovery < 60_000) return lastRecoveryOk;
-  lastRecovery = Date.now();
-  recovering = signInWithGoogle({ interactive: false })
-    .then(r => (lastRecoveryOk = r.ok))
-    .finally(() => { recovering = null; });
+  recovering = (async () => {
+    const s = await getAuthState();
+    if (s.mode !== 'google') return false;
+    if (Date.now() - lastRecovery < 60_000) return lastRecoveryOk;
+    lastRecovery = Date.now();
+    lastRecoveryOk = (await signInWithGoogle({ interactive: false })).ok;
+    return lastRecoveryOk;
+  })().finally(() => { recovering = null; });
   return recovering;
 }
