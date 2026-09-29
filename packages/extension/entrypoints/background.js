@@ -61,7 +61,10 @@ class VibeAnnotationsBackground {
   }
 
   setupTokenRefresh() {
-    chrome.alarms.create('vibe-token-refresh', { periodInMinutes: 360 });
+    // create() resets the schedule, and the worker starts often — only create it once.
+    chrome.alarms.get('vibe-token-refresh').then((alarm) => {
+      if (!alarm) chrome.alarms.create('vibe-token-refresh', { periodInMinutes: 360 });
+    }).catch(() => {});
     chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'vibe-token-refresh') ensureFreshToken().catch(() => {}); });
   }
 

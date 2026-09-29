@@ -6,7 +6,8 @@ const $ = (id) => document.getElementById(id);
 const send = (msg) => chrome.runtime.sendMessage(msg);
 const el = {
   url: $('server-url'), state: $('server-state'), serverErr: $('server-err'), loading: $('loading'),
-  signin: $('signin'), googleBtn: $('google-btn'), googleErr: $('google-err'),
+  signin: $('signin'), googleBtn: $('google-btn'), googleErr: $('google-err'), googleHint: $('google-hint'),
+  expired: $('expired'), againBtn: $('again-btn'), againErr: $('again-err'),
   signedIn: $('signed-in'), who: $('who'), whoEmail: $('who-email'), avatar: $('avatar'), signout: $('signout'),
   advanced: $('advanced'), token: $('manual-token'), manualSave: $('manual-save'), manualErr: $('manual-err'),
   cc: $('cc'), ccNote: $('cc-token-note'), ccLabel: $('cc-label'), ccCreate: $('cc-create'), ccErr: $('cc-err'),
@@ -14,6 +15,8 @@ const el = {
 };
 let authMode = 'none';
 let googleAvailable = false;
+// Google mode, but the server rejects our token and silent re-sign-in failed.
+let sessionExpired = false;
 const BAD_URL = 'Enter a full URL, e.g. http://my-vps.tailnet.ts.net:3846';
 
 function busy(btn, on, label) {
@@ -28,6 +31,23 @@ const fmtDate = (iso) => new Date(iso).toLocaleDateString(undefined, { day: 'num
 function setServerState(kind, text) {
   el.state.innerHTML = `<span class="dot ${kind}"></span><span></span>`;
   el.state.lastChild.textContent = text;
+}
+
+// The hint repeats what the domain error says, so hide it while an error shows.
+function setGoogleErr(text) {
+  el.googleErr.textContent = text;
+  el.googleHint.hidden = !!text;
+}
+
+// Expired session: keep the identity card, offer "Sign in again", hide the
+// token list (it can't load with a rejected token).
+function setSessionExpired(on) {
+  const was = sessionExpired;
+  sessionExpired = on && authMode === 'google';
+  el.expired.hidden = !sessionExpired;
+  el.cc.hidden = authMode !== 'google' || sessionExpired;
+  if (sessionExpired) { el.ccList.replaceChildren(); el.ccErr.textContent = ''; el.ccResult.hidden = true; }
+  else { el.againErr.textContent = ''; if (was && authMode === 'google') renderTokens(); }
 }
 
 function urlError(text) {
@@ -50,9 +70,12 @@ async function refreshStatus() {
   setServerState('', 'Checking…');
   const r = await send({ action: 'checkMCPStatus' });
   const s = r?.status;
-  if (s?.connected) { setServerState('ok', 'Online'); urlError(''); }
+  if (s?.connected) { setServerState('ok', 'Online'); urlError(''); setSessionExpired(false); }
   // Reachable, just not signed in yet — that's what the sign-in button is for.
   else if (s?.auth_error && authMode === 'none') { setServerState('ok', 'Online'); urlError(''); }
+  // Reachable but our token is rejected — not "Offline".
+  else if (s?.auth_error && authMode === 'google') { setServerState('warn', 'Signed out'); urlError(''); setSessionExpired(true); }
+  else if (s?.auth_error) { setServerState('warn', 'Token rejected'); el.serverErr.textContent = s.problem || ''; }
   else { setServerState('err', 'Offline'); el.serverErr.textContent = s?.problem || r?.error || ''; }
   // "You're connected with a token" only when that token actually works.
   el.ccNote.hidden = authMode !== 'token' || !googleAvailable || !s?.connected;
@@ -68,19 +91,22 @@ async function render() {
   el.signin.hidden = google || !auth.googleAvailable;
   el.signedIn.hidden = !google;
   el.advanced.hidden = google;
-  el.cc.hidden = !google;
+  if (!google) sessionExpired = false;
+  el.expired.hidden = !sessionExpired;
+  el.cc.hidden = !google || sessionExpired;
   if (!auth.googleAvailable) el.advanced.open = true;
   if (google && auth.user) {
     el.who.textContent = auth.user.name;
     el.whoEmail.textContent = auth.user.id;
     el.avatar.textContent = initials(auth.user.name);
   }
-  if (google) await renderTokens();
+  if (google && !sessionExpired) await renderTokens();
 }
 
 async function renderTokens() {
   const r = await send({ action: 'listMyTokens' });
   el.ccList.replaceChildren();
+  if (!r.ok && r.status === 401) { setSessionExpired(true); return; }
   if (!r.ok) { el.ccErr.textContent = r.error === 'server_unreachable' ? "Can't reach the server." : 'Could not load your tokens.'; return; }
   el.ccErr.textContent = '';
   const tokens = [...r.tokens].sort((a, b) => (b.current - a.current) || a.label.localeCompare(b.label));
@@ -90,7 +116,8 @@ async function renderTokens() {
     main.innerHTML = '<div class="title"></div><div class="meta"></div>';
     main.firstChild.textContent = t.kind === 'extension' ? 'Chrome extension' : t.label;
     main.firstChild.title = main.firstChild.textContent;
-    main.lastChild.textContent = t.current ? 'Renews automatically while you use Chrome' : `created ${fmtDate(t.created_at)}`;
+    main.lastChild.textContent = t.current ? 'Renews automatically while you use Chrome'
+      : t.kind === 'extension' ? `Another browser · signed in ${fmtDate(t.created_at)}` : `created ${fmtDate(t.created_at)}`;
     const actions = document.createElement('div');
     actions.className = 'actions';
     if (t.current) {
@@ -126,23 +153,26 @@ function confirmRevoke(actions, t) {
   yes.focus();
 }
 
-el.googleBtn.addEventListener('click', async () => {
+async function googleSignIn(btn, showErr) {
   el.status.textContent = '';
-  el.googleErr.textContent = '';
+  showErr('');
   if (!(await commitUrl())) return;
-  busy(el.googleBtn, true, 'Signing in…');
+  busy(btn, true, 'Signing in…');
   const r = await send({ action: 'googleSignIn', interactive: true });
-  busy(el.googleBtn, false);
+  busy(btn, false);
   if (!r.ok) {
-    el.googleErr.textContent = r.message || r.error || '';
+    showErr(r.message || r.error || '');
     el.status.textContent = '';
     await refreshStatus(); // the URL is saved now
     return;
   }
   el.status.textContent = `Signed in as ${r.user.name}.`;
+  sessionExpired = false;
   await render();
   await refreshStatus();
-});
+}
+el.googleBtn.addEventListener('click', () => googleSignIn(el.googleBtn, setGoogleErr));
+el.againBtn.addEventListener('click', () => googleSignIn(el.againBtn, (t) => { el.againErr.textContent = t; }));
 
 el.signout.addEventListener('click', async () => {
   busy(el.signout, true, 'Signing out');
@@ -185,7 +215,8 @@ el.ccCreate.addEventListener('click', async () => {
     return;
   }
   const { url } = await getServerConfig();
-  el.ccCommand.textContent = `claude mcp add --scope user --transport http vibe-annotations ${url}/mcp --header "Authorization: Bearer ${r.token}"`;
+  // Single-quoted so a shell never interprets the URL (quotes stripped defensively).
+  el.ccCommand.textContent = `claude mcp add --scope user --transport http vibe-annotations '${url.replace(/'/g, '')}/mcp' --header "Authorization: Bearer ${r.token}"`;
   el.ccResult.hidden = false;
   el.ccCopy.textContent = 'Copy';
   el.ccCopy.focus();

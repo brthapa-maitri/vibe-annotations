@@ -5,7 +5,7 @@
 
 export const DEFAULT_SERVER_URL = 'http://127.0.0.1:3846';
 const KEYS = ['vibeServerUrl', 'vibeServerToken'];
-const AUTH_KEYS = ['vibeAuthMode', 'vibeTokenExpiresAt', 'vibeUser'];
+const AUTH_KEYS = ['vibeAuthMode', 'vibeTokenExpiresAt', 'vibeUser', 'vibeGoogleFlow'];
 
 // Trim, drop trailing slashes, require http(s). Returns '' for invalid input.
 export function normalizeServerUrl(raw) {
@@ -51,7 +51,7 @@ export async function saveServerConfig({ url, token }) {
   };
   // A URL-only save keeps the token, so it must not demote a Google session.
   if (newToken !== String(stored || '').trim()) {
-    Object.assign(update, { vibeAuthMode: '', vibeTokenExpiresAt: null, vibeUser: null });
+    Object.assign(update, { vibeAuthMode: '', vibeTokenExpiresAt: null, vibeUser: null, vibeGoogleFlow: null });
   }
   await chrome.storage.local.set(update);
 }
@@ -94,13 +94,20 @@ export function googleSignInAvailable() {
 export async function getAuthState() {
   const r = await chrome.storage.local.get([...KEYS, ...AUTH_KEYS]);
   const mode = r.vibeAuthMode === 'google' && r.vibeServerToken ? 'google' : (r.vibeServerToken ? 'token' : 'none');
-  return { mode, user: mode === 'google' ? r.vibeUser || null : null, expiresAt: mode === 'google' ? r.vibeTokenExpiresAt || null : null };
+  const google = mode === 'google';
+  return {
+    mode,
+    user: google ? r.vibeUser || null : null,
+    expiresAt: google ? r.vibeTokenExpiresAt || null : null,
+    // Which Google flow signed in: 'chrome' (getAuthToken) or 'web' (account-picker pop-up).
+    flow: google ? r.vibeGoogleFlow || null : null,
+  };
 }
 
-export async function saveGoogleSession({ token, expiresAt, user }) {
-  await chrome.storage.local.set({ vibeServerToken: token, vibeAuthMode: 'google', vibeTokenExpiresAt: expiresAt, vibeUser: user });
+export async function saveGoogleSession({ token, expiresAt, user, flow }) {
+  await chrome.storage.local.set({ vibeServerToken: token, vibeAuthMode: 'google', vibeTokenExpiresAt: expiresAt, vibeUser: user, vibeGoogleFlow: flow || null });
 }
 
 export async function clearGoogleSession() {
-  await chrome.storage.local.set({ vibeServerToken: '', vibeAuthMode: '', vibeTokenExpiresAt: null, vibeUser: null });
+  await chrome.storage.local.set({ vibeServerToken: '', vibeAuthMode: '', vibeTokenExpiresAt: null, vibeUser: null, vibeGoogleFlow: null });
 }

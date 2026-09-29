@@ -25,6 +25,7 @@ input:focus-visible, button:focus-visible, summary:focus-visible { outline:2px s
   padding:4px 10px; border:1px solid var(--line); border-radius:999px; background:var(--bg); }
 .dot { width:8px; height:8px; border-radius:50%; background:#555; flex:none; }
 .dot.ok { background:#4ade80; box-shadow:0 0 0 3px rgba(74,222,128,.15); }
+.dot.warn { background:#fbbf24; box-shadow:0 0 0 3px rgba(251,191,36,.15); }
 .dot.err { background:#f87171; box-shadow:0 0 0 3px rgba(248,113,113,.15); }
 button { font:inherit; font-size:13px; line-height:1.4; border-radius:8px; cursor:pointer; padding:10px 14px; border:1px solid var(--line);
   background:#262626; color:var(--text); display:inline-flex; gap:8px; align-items:center; justify-content:center; white-space:nowrap;
@@ -83,3 +84,4 @@ ul.tokens .tag { font-size:11px; color:var(--ok); border:1px solid rgba(134,239,
   .head, section { padding-left:18px; padding-right:18px; }
 }
 @media (prefers-reduced-motion: reduce) { .spin, .skel span { animation:none; } }
+.expired-note { color:#fcd34d; font-size:13px; margin:12px 0 10px; }

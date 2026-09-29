@@ -31,13 +31,16 @@ async function tokenViaChrome(interactive) {
   return token;
 }
 
-async function tokenViaWebFlow(interactive) {
+// loginHint (the signed-in user's email) lets Google pick the right account —
+// required for the silent (prompt=none) refresh when Chrome has several accounts.
+async function tokenViaWebFlow(interactive, loginHint) {
   if (webToken && webToken.expiresAt > Date.now() + 60_000) return webToken.token;
   if (!WEB_CLIENT_ID) throw Object.assign(new Error('unavailable'), { code: 'unavailable' });
   const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
   url.search = new URLSearchParams({
     client_id: WEB_CLIENT_ID, response_type: 'token', redirect_uri: chrome.identity.getRedirectURL(),
     scope: 'openid email profile', prompt: interactive ? 'select_account' : 'none',
+    ...(loginHint ? { login_hint: loginHint } : {}),
   });
   const redirect = await chrome.identity.launchWebAuthFlow({ url: url.href, interactive });
   const params = new URLSearchParams(new URL(redirect).hash.slice(1));
@@ -47,13 +50,17 @@ async function tokenViaWebFlow(interactive) {
   return token;
 }
 
-export async function getGoogleAccessToken({ interactive }) {
+// → { token, flow: 'chrome' | 'web' }. flow 'web' skips Chrome's getAuthToken,
+// whose token always belongs to the browser profile's account.
+async function getGoogleAccessToken({ interactive, flow, loginHint }) {
   if (!chrome.identity) throw Object.assign(new Error('unavailable'), { code: 'unavailable' });
+  const viaWeb = async () => ({ token: await tokenViaWebFlow(interactive, loginHint), flow: 'web' });
+  if (flow === 'web') return viaWeb();
   try {
-    // getAuthToken exists only in Google Chrome; other Chromium browsers throw.
-    return await tokenViaChrome(interactive);
+    return { token: await tokenViaChrome(interactive), flow: 'chrome' };
   } catch (err) {
-    if (/not supported|getAuthToken/i.test(String(err?.message))) return tokenViaWebFlow(interactive);
+    // getAuthToken exists only in Google Chrome; other Chromium browsers throw.
+    if (/not supported|getAuthToken/i.test(String(err?.message))) return viaWeb();
     throw Object.assign(new Error('cancelled'), { code: 'cancelled' });
   }
 }
@@ -65,13 +72,15 @@ async function dropCachedGoogleToken(token) {
   try { await chrome.identity.removeCachedAuthToken({ token }); } catch { /* web flow / unsupported */ }
 }
 
+// previous_token: this browser's current server token, so the server replaces
+// only it and the same person's other browsers stay signed in.
 async function exchange(accessToken) {
-  const { url } = await getServerConfig();
+  const { url, token: previous } = await getServerConfig();
   let res;
   try {
     res = await fetch(`${url}/api/auth/google`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ access_token: accessToken }), signal: AbortSignal.timeout(10000),
+      body: JSON.stringify({ access_token: accessToken, ...(previous ? { previous_token: previous } : {}) }), signal: AbortSignal.timeout(10000),
     });
   } catch {
     return { ok: false, error: 'server_unreachable' };
@@ -82,27 +91,50 @@ async function exchange(accessToken) {
 }
 
 export async function signInWithGoogle({ interactive }) {
+  if (interactive) silentBlockedUntilChange = false;
   const fail = (error) => ({ ok: false, error, message: SIGN_IN_MESSAGES[error] ?? SIGN_IN_MESSAGES.invalid_token });
+  const stored = await getAuthState();
+  const opts = {
+    interactive,
+    loginHint: stored.user?.id || '',
+    // A silent refresh must use the flow that signed in: for an account picked in
+    // the pop-up, Chrome's token is the profile's (other) account.
+    flow: !interactive && stored.flow === 'web' ? 'web' : undefined,
+  };
   let access;
-  try { access = await getGoogleAccessToken({ interactive }); } catch (e) { return fail(e.code || 'cancelled'); }
-  let r = await exchange(access);
+  try { access = await getGoogleAccessToken(opts); } catch (e) { return fail(e.code || 'cancelled'); }
+  let r = await exchange(access.token);
   if (!r.ok && r.error === 'invalid_token') {
     // Chrome may hand back a revoked cached token — drop it and retry once.
-    await dropCachedGoogleToken(access);
-    try { access = await getGoogleAccessToken({ interactive }); } catch (e) { return fail(e.code || 'cancelled'); }
-    r = await exchange(access);
+    await dropCachedGoogleToken(access.token);
+    try { access = await getGoogleAccessToken(opts); } catch (e) { return fail(e.code || 'cancelled'); }
+    r = await exchange(access.token);
   }
-  if (!r.ok && r.error === 'wrong_domain' && access === lastChromeToken) {
+  if (!r.ok && r.error === 'wrong_domain' && access.flow === 'chrome') {
     // Chrome's token belongs to the browser profile's account, which isn't the work
     // account. Forget it, and let the user pick another account in the pop-up flow.
-    await dropCachedGoogleToken(access);
+    await dropCachedGoogleToken(access.token);
     if (!interactive || !WEB_CLIENT_ID) return { ok: false, error: 'wrong_domain', message: SIGN_IN_MESSAGES.wrong_domain_chrome_profile };
-    try { access = await tokenViaWebFlow(true); } catch (e) { return fail(e.code || 'cancelled'); }
-    r = await exchange(access);
+    try { access = { token: await tokenViaWebFlow(true, opts.loginHint), flow: 'web' }; } catch (e) { return fail(e.code || 'cancelled'); }
+    r = await exchange(access.token);
   }
   if (!r.ok) return fail(r.error);
-  await saveGoogleSession({ token: r.token, expiresAt: Date.parse(r.expires_at), user: r.user });
+  await saveGoogleSession({ token: r.token, expiresAt: Date.parse(r.expires_at), user: r.user, flow: access.flow });
   return { ok: true, user: r.user };
+}
+
+// After a silent sign-in fails, stop trying automatically (no Google or server
+// calls) until something changes: the stored token or server URL, an interactive
+// sign-in, or a new service worker. Otherwise every connection check retries.
+let silentBlockedUntilChange = false;
+chrome.storage?.onChanged?.addListener((changes, area) => {
+  if (area === 'local' && ('vibeServerToken' in changes || 'vibeServerUrl' in changes)) silentBlockedUntilChange = false;
+});
+
+async function silentSignIn() {
+  const r = await signInWithGoogle({ interactive: false });
+  if (!r.ok) silentBlockedUntilChange = true;
+  return r.ok;
 }
 
 async function serverCall(path, init = {}) {
@@ -137,12 +169,13 @@ const DAY = 24 * 60 * 60 * 1000;
 const REFRESH_RETRY_MS = 10 * 60 * 1000;
 let lastRefreshAttempt = 0;
 export async function ensureFreshToken() {
+  if (silentBlockedUntilChange) return;
   const s = await getAuthState();
   if (s.mode !== 'google' || !s.expiresAt || s.expiresAt - Date.now() > DAY) return;
   // Runs on every connection check; don't hammer Google if silent sign-in keeps failing.
   if (Date.now() - lastRefreshAttempt < REFRESH_RETRY_MS) return;
   lastRefreshAttempt = Date.now();
-  await signInWithGoogle({ interactive: false });
+  await silentSignIn();
 }
 
 // Several connection checks can hit the same 401 at once (config-change listener,
@@ -152,6 +185,7 @@ let lastRecovery = 0;
 let lastRecoveryOk = false;
 let recovering = null;
 export function recoverFromAuthError() {
+  if (silentBlockedUntilChange) return Promise.resolve(false);
   // Assigned synchronously, before any await, so concurrent callers always share it.
   if (recovering) return recovering;
   recovering = (async () => {
@@ -159,7 +193,7 @@ export function recoverFromAuthError() {
     if (s.mode !== 'google') return false;
     if (Date.now() - lastRecovery < 60_000) return lastRecoveryOk;
     lastRecovery = Date.now();
-    lastRecoveryOk = (await signInWithGoogle({ interactive: false })).ok;
+    lastRecoveryOk = await silentSignIn();
     return lastRecoveryOk;
   })().finally(() => { recovering = null; });
   return recovering;
