@@ -6,22 +6,39 @@ import path from 'path';
 
 export const ONBOARDING_DIR = path.join(process.env.HOME || process.env.USERPROFILE, '.vibe-annotations', 'onboarding');
 
-export function onboardingMarkdown({ id, name, token, serverUrl }) {
-  const mcpUrl = `${serverUrl}/mcp`;
-  return `# Vibe Annotations — setup for ${name}
+// Once the extension is on the Chrome Web Store, set VIBE_EXTENSION_ID (the
+// store item id) and guides link to the store listing plus a one-click setup
+// link; without it they fall back to building the extension from source.
+function extensionSteps({ name, token, serverUrl, extensionId }) {
+  if (extensionId) {
+    const setupLink = `chrome-extension://${extensionId}/options.html#url=${encodeURIComponent(serverUrl)}&token=${encodeURIComponent(token)}`;
+    return `## 1. Install the extension
 
-> **This file contains your personal token. Don't share it or commit it.**
-> Anyone with it can read and change your annotations as you. If it leaks, ask for a new one.
+Install **Maitri Annotations** from the Chrome Web Store. The listing is only visible to the team,
+so open the link while signed in to Chrome with your work account:
 
-| | |
-|---|---|
-| User | \`${id}\` (${name}) |
-| Server | \`${serverUrl}\` |
-| Token | \`${token}\` |
+https://chromewebstore.google.com/detail/${extensionId}
 
-You need to be connected to the team **Tailscale** network — the server is only reachable there.
+If you have the public Vibe Annotations extension or an unpacked build, disable it.
 
-## 1. Install the extension
+## 2. Connect the extension
+
+Copy this link and **paste it into Chrome's address bar** (Chrome blocks clicking
+\`chrome-extension://\` links from web pages and chat apps):
+
+\`\`\`
+${setupLink}
+\`\`\`
+
+Check the server URL on the page that opens, then click **Connect**. It should say
+**"Connected as ${name}."**
+
+Setting it up by hand instead: toolbar → **Settings** → **Server**, URL \`${serverUrl}\`, token above, **Save**.
+If your frontend isn't a \`localhost\` URL, click the extension icon on it once and allow the site.
+
+`;
+  }
+  return `## 1. Install the extension
 
 Needs Node.js 20+ and Git.
 
@@ -46,7 +63,25 @@ extension if you have it.
    - Token: \`${token}\`
 3. Click **Save**. It should say **"Connected as ${name}."**
 
-## 3. Connect Claude Code
+`;
+}
+
+export function onboardingMarkdown({ id, name, token, serverUrl, extensionId = process.env.VIBE_EXTENSION_ID }) {
+  const mcpUrl = `${serverUrl}/mcp`;
+  return `# Vibe Annotations — setup for ${name}
+
+> **This file contains your personal token. Don't share it or commit it.**
+> Anyone with it can read and change your annotations as you. If it leaks, ask for a new one.
+
+| | |
+|---|---|
+| User | \`${id}\` (${name}) |
+| Server | \`${serverUrl}\` |
+| Token | \`${token}\` |
+
+You need to be connected to the team **Tailscale** network — the server is only reachable there.
+
+${extensionSteps({ name, token, serverUrl, extensionId })}## 3. Connect Claude Code
 
 **Claude Code on your own machine:**
 
@@ -79,8 +114,9 @@ Your Claude only sees **your** annotations. Ask for *"the team's annotations"* t
 
 | Settings says | Fix |
 |---|---|
-| "The server rejected this token." | Token mistyped or rotated — paste it again or ask for a new one. |
-| "Saved, but the server is not reachable." | Connect to Tailscale; check the URL. |
+| "… rejected the token" | Token mistyped or rotated — use your setup link again or ask for a new one. |
+| "Can't reach … is Tailscale/VPN connected" | Connect to Tailscale; check the URL. |
+| "Extension was updated or reloaded" | Refresh the page. |
 | Toolbar doesn't appear on a page | Click the extension icon on that page and allow the site. |
 `;
 }

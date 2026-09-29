@@ -1,7 +1,7 @@
 // API sync — health checks, bidirectional merge, individual CRUD sync
 import { isSupportedUrl } from './url-filter.js';
 import { updateAllBadges } from './badge.js';
-import { getServerConfig, authHeaders } from '../server-config.js';
+import { getServerConfig, authHeaders, describeConnectionProblem } from '../server-config.js';
 
 let connected = false;
 
@@ -40,17 +40,17 @@ export async function checkConnection() {
       const who = await apiFetch('/api/whoami', { signal: AbortSignal.timeout(5000) });
       if (who.status === 401) {
         connected = false;
-        return { connected: false, auth_error: true, server_url: API_URL, server_version: data.version, error: 'Invalid or missing token', last_check: new Date().toISOString() };
+        return { connected: false, auth_error: true, server_url: API_URL, server_version: data.version, error: 'Invalid or missing token', problem: describeConnectionProblem('auth', API_URL), last_check: new Date().toISOString() };
       }
       const user = who.ok ? (await who.json()).user || null : null;
       return { connected: true, user, server_url: API_URL, server_version: data.version, server_status: data.status, version_compatible: versionCompatible, compatibility_message: compatibilityMessage, last_check: new Date().toISOString() };
     } else {
       connected = false;
-      return { connected: false, server_url: API_URL, error: `Server returned ${response.status}`, last_check: new Date().toISOString() };
+      return { connected: false, server_url: API_URL, error: `Server returned ${response.status}`, problem: describeConnectionProblem('http', API_URL, response.status), last_check: new Date().toISOString() };
     }
   } catch (error) {
     connected = false;
-    return { connected: false, server_url: API_URL, error: error.message, last_check: new Date().toISOString() };
+    return { connected: false, server_url: API_URL, error: error.message, problem: describeConnectionProblem('network', API_URL, error), last_check: new Date().toISOString() };
   }
 }
 

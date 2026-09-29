@@ -54,6 +54,21 @@ export function onServerConfigChanged(cb) {
   });
 }
 
+// Human-readable reason a connection attempt failed, so "offline" tells the user
+// what to fix. `kind`: 'network' (fetch threw), 'http' (non-2xx), 'auth' (401).
+export function describeConnectionProblem(kind, url, detail) {
+  let host = url;
+  try { host = new URL(url).host; } catch { /* keep raw */ }
+  const local = isLoopbackServer(url);
+  if (kind === 'auth') return `${host} rejected the token — re-run your setup link or ask for a new token.`;
+  if (kind === 'http') return `${host} answered HTTP ${detail} — the server may be misconfigured or restarting.`;
+  const timedOut = detail && (detail.name === 'TimeoutError' || detail.name === 'AbortError');
+  const what = timedOut ? `${host} timed out` : `Can't reach ${host}`;
+  return local
+    ? `${what} — is vibe-annotations-server running?`
+    : `${what} — is Tailscale/VPN connected and the server up?`;
+}
+
 export function authHeaders(token) {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }

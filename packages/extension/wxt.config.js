@@ -14,10 +14,13 @@ export default defineConfig({
     keepProfileChanges: true,
   },
   manifest: {
-    name: 'Vibe Annotations - Visual Feedback for AI Coding Agents',
+    // Team build — a fork of Vibe Annotations (Raphael Regnier / Spellbind Creative
+    // Studio, PolyForm Shield) published privately for Maitri Services. Kept distinct
+    // from the upstream public listing's name and author.
+    name: 'Maitri Annotations',
     description:
-      'Visual annotations for localhost dev projects. Send feedback to AI coding agents like Claude & Cursor via MCP.',
-    author: 'Raphael Regnier - Spellbind Creative Studio',
+      'Team build of Vibe Annotations: annotate your dev app and send the feedback to AI coding agents via MCP.',
+    author: 'Maitri Services',
     permissions: ['activeTab', 'storage', 'scripting'],
     // '*://*/*' covers the "enable on all sites" annotation flow (http/https).
     // '<all_urls>' is additionally required by chrome.tabs.captureVisibleTab for

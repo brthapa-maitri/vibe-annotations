@@ -16,6 +16,7 @@ import { isRecordableHotkey } from './hotkey.js';
   let isAnnotating = false;
   let serverOnline = false;
   let serverOutdated = false; // connected but older than the extension needs
+  let serverProblem = null;   // why we're offline, in words the user can act on
   let annotationCount = 0;
   let styleAnnotationCount = 0;
   let clearOnCopy = false;
@@ -769,7 +770,7 @@ import { isRecordableHotkey } from './hotkey.js';
     const serverMsg = settingsDropdown.querySelector('.vibe-server-msg');
     VibeAPI.checkServerStatus().then(status => {
       if (status.user) serverMsg.textContent = `Connected as ${status.user.name}.`;
-      else if (status.authError) serverMsg.textContent = 'The server rejected this token.';
+      else if (!status.connected && status.problem) serverMsg.textContent = status.problem;
     });
     settingsDropdown.querySelector('.vibe-server-save').addEventListener('click', async () => {
       const url = settingsDropdown.querySelector('.vibe-server-url').value.trim();
@@ -782,8 +783,7 @@ import { isRecordableHotkey } from './hotkey.js';
       serverMsg.textContent = 'Saved — connecting…';
       const status = await VibeAPI.checkServerStatus();
       await refreshServerStatus();
-      serverMsg.textContent = status.authError ? 'Server reachable, but the token was rejected.'
-        : !serverOnline ? 'Saved, but the server is not reachable.'
+      serverMsg.textContent = !status.connected ? `Saved. ${status.problem || 'The server is not reachable.'}`
         : status.user ? `Connected as ${status.user.name}.` : 'Connected.';
       const dot = settingsDropdown?.querySelector('.vibe-server-dot');
       if (dot) dot.style.background = serverOnline ? 'var(--v-status-online)' : 'var(--v-status-offline)';
@@ -952,16 +952,18 @@ import { isRecordableHotkey } from './hotkey.js';
       } else {
         statusEl.innerHTML = ICONS.serverRack;
         statusEl.style.color = 'var(--v-status-offline)';
-        statusEl.title = 'MCP Server offline';
+        statusEl.title = serverProblem ? `MCP Server offline — ${serverProblem}` : 'MCP Server offline';
       }
     }
   }
 
   async function refreshServerStatus() {
     const status = await VibeAPI.checkServerStatus();
-    const changed = serverOnline !== status.connected || serverOutdated !== !!status.outdated;
+    const problem = status.connected ? null : (status.problem || null);
+    const changed = serverOnline !== status.connected || serverOutdated !== !!status.outdated || serverProblem !== problem;
     serverOnline = status.connected;
     serverOutdated = !!status.outdated;
+    serverProblem = problem;
     if (changed) updateUI();
   }
 

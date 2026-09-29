@@ -849,6 +849,13 @@ class LocalAnnotationsServer {
     });
 
     server.onerror = (error) => {
+      // A client newer than our SDK sends an MCP-Protocol-Version we don't know yet.
+      // The 400 we return makes it fall back to a supported version, so this is
+      // expected — log one line, not a stack trace per request.
+      if (/Unsupported protocol version/.test(error?.message || '')) {
+        console.warn(`[MCP] ${error.message.replace(/^Bad Request: /, '')} — client will fall back`);
+        return;
+      }
       console.error('[MCP Error]', error);
     };
   }

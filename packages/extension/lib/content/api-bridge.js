@@ -1,7 +1,7 @@
 // Wraps all chrome.runtime.sendMessage and chrome.storage calls
 // Single interface for data operations used by all modules
 
-import { DEFAULT_SERVER_URL, getServerConfig, saveServerConfig, onServerConfigChanged, isLoopbackServer, authHeaders, withTokenParam } from '../server-config.js';
+import { DEFAULT_SERVER_URL, getServerConfig, saveServerConfig, onServerConfigChanged, isLoopbackServer, authHeaders, withTokenParam, describeConnectionProblem } from '../server-config.js';
 
 // Configured server (Settings → Server). Loaded async; the default covers the
 // first few ms before storage answers.
@@ -90,10 +90,11 @@ function isServerOutdated(version) {
         });
         let version = null;
         if (res.ok) { try { version = (await res.json())?.version || null; } catch { /* older server / bad body */ } }
-        status = { connected: res.ok, version, user: null, authError: false };
+        status = { connected: res.ok, version, user: null, authError: false,
+          problem: res.ok ? null : describeConnectionProblem('http', serverConfig.url, res.status) };
         if (res.ok) {
           const who = await serverFetch('/api/whoami', { signal: AbortSignal.timeout(2000) });
-          if (who.status === 401) status = { connected: false, version, user: null, authError: true };
+          if (who.status === 401) status = { connected: false, version, user: null, authError: true, problem: describeConnectionProblem('auth', serverConfig.url) };
           else if (who.ok) status.user = (await who.json()).user || null;
         }
       } catch {
@@ -111,9 +112,10 @@ function isServerOutdated(version) {
     try {
       const r = await chrome.runtime.sendMessage({ action: 'checkMCPStatus' });
       const s = r && r.success && r.status;
-      return { connected: !!(s && s.connected), version: s ? s.server_version : null, user: s?.user || null, authError: !!s?.auth_error };
+      return { connected: !!(s && s.connected), version: s ? s.server_version : null, user: s?.user || null, authError: !!s?.auth_error, problem: s?.problem || null };
     } catch {
-      return { connected: false, version: null, user: null, authError: false };
+      // The background itself didn't answer (extension reloaded/updated under this tab).
+      return { connected: false, version: null, user: null, authError: false, problem: 'Extension was updated or reloaded — refresh this page.' };
     }
   }
 
