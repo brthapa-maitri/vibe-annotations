@@ -11,7 +11,6 @@ export const ONBOARDING_DIR = path.join(process.env.HOME || process.env.USERPROF
 // link; without it they fall back to building the extension from source.
 function extensionSteps({ name, token, serverUrl, extensionId }) {
   if (extensionId) {
-    const setupLink = `chrome-extension://${extensionId}/options.html#url=${encodeURIComponent(serverUrl)}&token=${encodeURIComponent(token)}`;
     return `## 1. Install the extension
 
 Install **Maitri Annotations** from the Chrome Web Store. The listing is only visible to the team,
@@ -23,18 +22,14 @@ If you have the public Vibe Annotations extension or an unpacked build, disable 
 
 ## 2. Connect the extension
 
-Copy this link and **paste it into Chrome's address bar** (Chrome blocks clicking
-\`chrome-extension://\` links from web pages and chat apps):
+Paste this into Chrome's address bar, then click **Sign in with Google** (use your work account):
 
 \`\`\`
-${setupLink}
+chrome-extension://${extensionId}/options.html#url=${encodeURIComponent(serverUrl)}
 \`\`\`
 
-Check the server URL on the page that opens, then click **Connect**. It should say
-**"Connected as ${name}."**
-
-Setting it up by hand instead: toolbar → **Settings** → **Server**, URL \`${serverUrl}\`, token above, **Save**.
-If your frontend isn't a \`localhost\` URL, click the extension icon on it once and allow the site.
+Your Claude Code command is on the same page: under **Claude Code**, name the machine and click
+**Create command**.
 
 `;
   }

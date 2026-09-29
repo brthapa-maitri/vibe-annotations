@@ -41,3 +41,19 @@ export VIBE_EXTENSION_ID=<store item id>
 The setup link is `chrome-extension://<id>/options.html#url=<server>&token=<token>`. Teammates
 paste it into the address bar (Chrome blocks clicking `chrome-extension://` links from pages),
 check the URL, and click **Connect**. The same page is the extension's Options page.
+
+## Google sign-in (one time)
+
+1. https://console.cloud.google.com → new project (no billing needed).
+2. **OAuth consent screen** → User type **Internal** → app name "Maitri Annotations" →
+   scopes `openid`, `email`, `profile`.
+3. **Credentials → Create OAuth client ID → Chrome Extension** → item id = the store id.
+4. **Credentials → Create OAuth client ID → Web application** → Authorized redirect URI
+   `https://<store id>.chromiumapp.org/` (used by the pop-up in Edge/Brave).
+5. Server: add to `~/.vibe-annotations/server.env` and restart the service:
+   `VIBE_GOOGLE_CLIENT_IDS=<chrome client id>,<web client id>` (optional `VIBE_GOOGLE_DOMAIN`).
+6. Extension: build with both ids and upload a new version:
+   `VIBE_GOOGLE_CLIENT_ID=<chrome client id> VIBE_GOOGLE_WEB_CLIENT_ID=<web client id> npx wxt zip`
+
+Offboarding: `vibe-team remove <email>` removes the user and all their tokens immediately;
+otherwise their extension access lapses within 7 days.
